@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastPark - Installation PWA</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#667eea">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Poppins', sans-serif;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 500px; margin: 0 auto; }
+        .card {
+            background: white;
+            border-radius: 20px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 { color: #333; margin-bottom: 10px; }
+        .subtitle { color: #666; margin-bottom: 20px; }
+        .step {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 15px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .step:last-child { border-bottom: none; }
+        .step-number {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 1.2em;
+        }
+        .step-content { flex: 1; }
+        .step-content strong { display: block; color: #333; }
+        .step-content p { color: #666; font-size: 0.85em; }
+        .btn {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            padding: 12px 24px;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 600;
+            margin-top: 20px;
+            text-align: center;
+            border: none;
+            cursor: pointer;
+            width: 100%;
+            font-size: 1em;
+        }
+        .btn:hover { opacity: 0.9; transform: translateY(-2px); }
+        .btn-success { background: #4CAF50; }
+        .icon { font-size: 24px; margin-right: 10px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h1>📱 Installer FastPark</h1>
+            <div class="subtitle">Accédez au parking en 1 clic depuis votre téléphone</div>
+            
+            <div class="step">
+                <div class="step-number">1</div>
+                <div class="step-content">
+                    <strong>Ouvrez FastPark dans Chrome/Safari</strong>
+                    <p>Assurez-vous d'être sur la page d'accueil</p>
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-number">2</div>
+                <div class="step-content">
+                    <strong>Menu ⋮ (Chrome) ou 📤 (Safari)</strong>
+                    <p>Cliquez sur le menu du navigateur</p>
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-number">3</div>
+                <div class="step-content">
+                    <strong>Sélectionnez "Installer l'application"</strong>
+                    <p>Ou "Ajouter à l'écran d'accueil"</p>
+                </div>
+            </div>
+            
+            <div class="step">
+                <div class="step-number">4</div>
+                <div class="step-content">
+                    <strong>✅ C'est fait !</strong>
+                    <p>FastPark est maintenant sur votre téléphone</p>
+                </div>
+            </div>
+            
+            <a href="/dashboard" class="btn">🎯 Aller au dashboard</a>
+        </div>
+        
+        <div class="card">
+            <h3>🔔 Notifications</h3>
+            <p style="color:#666; margin-bottom: 15px;">Activez les notifications pour être alerté quand le parking est presque plein !</p>
+            <button id="enableNotifications" class="btn btn-success">🔔 Activer les notifications</button>
+        </div>
+        
+        <div class="card">
+            <h3>📊 Statistiques PWA</h3>
+            <div id="pwaStats" style="color:#666;">
+                <p>📱 Vérification du Service Worker...</p>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Vérifier le Service Worker
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.ready.then(registration => {
+                document.getElementById('pwaStats').innerHTML = `
+                    <p>✅ Service Worker actif</p>
+                    <p>🔄 Cache: ${registration.active ? 'installé' : 'en attente'}</p>
+                `;
+            }).catch(() => {
+                document.getElementById('pwaStats').innerHTML = '<p>❌ Service Worker non disponible</p>';
+            });
+        } else {
+            document.getElementById('pwaStats').innerHTML = '<p>❌ PWA non supportée sur ce navigateur</p>';
+        }
+        
+        // Activer les notifications
+        document.getElementById('enableNotifications').addEventListener('click', () => {
+            if ('Notification' in window) {
+                Notification.requestPermission().then(permission => {
+                    if (permission === 'granted') {
+                        alert('✅ Notifications activées !');
+                        new Notification('FastPark', {
+                            body: 'Vous recevrez des alertes quand le parking est plein',
+                            icon: '/static/icon-192.png'
+                        });
+                    } else {
+                        alert('❌ Vous devrez activer les notifications dans les paramètres de votre navigateur');
+                    }
+                });
+            } else {
+                alert('❌ Les notifications ne sont pas supportées sur ce navigateur');
+            }
+        });
+    </script>
+</body>
+</html>

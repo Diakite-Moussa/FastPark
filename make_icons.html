@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Générer icônes FastPark</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1a1a2e; color: white; text-align: center; }
+        button { background: #4CAF50; color: white; border: none; padding: 15px 30px; border-radius: 8px; cursor: pointer; font-size: 1.2em; margin: 20px; }
+        a { color: white; text-decoration: none; display: inline-block; margin: 5px; }
+        .icon-list { display: flex; flex-wrap: wrap; justify-content: center; gap: 15px; }
+        .icon-item { text-align: center; }
+    </style>
+</head>
+<body>
+    <h1>🅿️ Génération des icônes FastPark</h1>
+    <p>Cliquez sur "Télécharger tout" puis placez les fichiers dans le dossier <strong>static/</strong></p>
+    <button onclick="downloadAll()">📥 Télécharger toutes les icônes</button>
+    <div class="icon-list" id="icons"></div>
+
+    <script>
+        const sizes = [72, 96, 128, 144, 152, 192, 256, 512];
+        const container = document.getElementById('icons');
+        const icons = [];
+
+        sizes.forEach(size => {
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            
+            // Fond dégradé
+            const grad = ctx.createLinearGradient(0, 0, size, size);
+            grad.addColorStop(0, '#667eea');
+            grad.addColorStop(1, '#764ba2');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, size, size);
+            
+            // Texte "P"
+            ctx.fillStyle = 'white';
+            ctx.font = `bold ${size * 0.5}px "Segoe UI"`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('P', size/2, size/2);
+            
+            // Miniature
+            const link = document.createElement('a');
+            link.download = `icon-${size}.png`;
+            link.href = canvas.toDataURL();
+            
+            const miniCanvas = document.createElement('canvas');
+            miniCanvas.width = 64;
+            miniCanvas.height = 64;
+            miniCanvas.getContext('2d').drawImage(canvas, 0, 0, 64, 64);
+            
+            const div = document.createElement('div');
+            div.className = 'icon-item';
+            div.innerHTML = `<div>${size}x${size}</div>`;
+            div.appendChild(miniCanvas);
+            link.appendChild(div);
+            
+            container.appendChild(link);
+            icons.push(link);
+        });
+
+        function downloadAll() {
+            icons.forEach(link => {
+                setTimeout(() => link.click(), 100);
+            });
+            alert('Téléchargement lancé ! Placez les fichiers dans le dossier static/');
+        }
+    </script>
+</body>
+</html>

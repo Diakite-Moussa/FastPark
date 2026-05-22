@@ -1,0 +1,25 @@
+listener 1883
+allow_anonymous true
+
+persistence true
+persistence_location /mosquitto/data/
+
+log_dest stdout
+
+Twilio code= 23V56NU3VNMPU5XCG8BM9T9S
+
+
+Moussa_Diakite-Elimane_NDao-Issoufou_Adamou_Abdoul_Madjid-TP1
+
+
+
+
+▶️ Ordre de démarrage — 3 étapes
+Étape 1 — Générer le certificat (une seule fois) :
+Double-clic sur : generer_ssl.bat
+Étape 2 — Lancer Docker :
+Double-clic sur : lancer_docker.bat
+Étape 3 — Ouvrir dans le navigateur :
+https://localhost
+
+Le navigateur affiche un avertissement car le certificat est auto-signé. Cliquez sur Paramètres avancés → Accéder à localhost. C'est normal en local — en production réelle, on utilise Let's Encrypt qui est gratuit et reconnu.

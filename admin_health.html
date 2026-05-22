@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastPark - Monitoring</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e, #16213e);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: white;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+        }
+        .status {
+            font-size: 1.4em;
+            font-weight: bold;
+            text-align: center;
+            padding: 15px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+        }
+        .status.healthy {
+            background: rgba(76, 175, 80, 0.2);
+            color: #4CAF50;
+            border: 1px solid #4CAF50;
+        }
+        .status.warning {
+            background: rgba(255, 152, 0, 0.2);
+            color: #FF9800;
+            border: 1px solid #FF9800;
+        }
+        .status.unhealthy {
+            background: rgba(244, 67, 54, 0.2);
+            color: #f44336;
+            border: 1px solid #f44336;
+        }
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+        .metric:last-child {
+            border-bottom: none;
+        }
+        .metric strong {
+            color: #aaa;
+        }
+        .refresh-btn {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: 600;
+            display: block;
+            margin: 0 auto 20px auto;
+            transition: transform 0.3s;
+        }
+        .refresh-btn:hover {
+            transform: translateY(-2px);
+        }
+        .timestamp {
+            text-align: center;
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 0.8em;
+            margin-top: 20px;
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            font-weight: 600;
+        }
+        .badge.success {
+            background: rgba(76, 175, 80, 0.2);
+            color: #4CAF50;
+        }
+        .badge.warning {
+            background: rgba(255, 152, 0, 0.2);
+            color: #FF9800;
+        }
+        .badge.danger {
+            background: rgba(244, 67, 54, 0.2);
+            color: #f44336;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏥 FastPark - Monitoring</h1>
+        <button class="refresh-btn" onclick="checkHealth()">🔄 Actualiser</button>
+        
+        <div class="card">
+            <div id="status" class="status">Chargement...</div>
+            <div id="details"></div>
+        </div>
+        
+        <div class="timestamp" id="timestamp"></div>
+    </div>
+
+    <script>
+        async function checkHealth() {
+            try {
+                const response = await fetch('/api/health', { credentials: 'include' });
+                const data = await response.json();
+                
+                const statusDiv = document.getElementById('status');
+                const detailsDiv = document.getElementById('details');
+                
+                if (data.status === 'healthy') {
+                    statusDiv.innerHTML = '✅ Système en bonne santé';
+                    statusDiv.className = 'status healthy';
+                } else if (data.status === 'warning') {
+                    statusDiv.innerHTML = '⚠️ Attention - Données anciennes';
+                    statusDiv.className = 'status warning';
+                } else {
+                    statusDiv.innerHTML = '❌ Système en panne';
+                    statusDiv.className = 'status unhealthy';
+                }
+                
+                const mqttBadge = data.mqtt_broker === 'connected' 
+                    ? '<span class="badge success">Connecté</span>' 
+                    : '<span class="badge danger">Déconnecté</span>';
+                
+                const dataFreshBadge = data.data_fresh 
+                    ? '<span class="badge success">Fraîches</span>' 
+                    : '<span class="badge warning">Anciennes</span>';
+                
+                detailsDiv.innerHTML = `
+                    <div class="metric"><strong>📡 Broker MQTT</strong><span>${mqttBadge}</span></div>
+                    <div class="metric"><strong>🕐 Données</strong><span>${dataFreshBadge}</span></div>
+                    <div class="metric"><strong>📅 Dernière mise à jour</strong><span>${data.last_data_update ? new Date(data.last_data_update).toLocaleString('fr-FR') : 'Jamais'}</span></div>
+                    <div class="metric"><strong>🅿️ Total places</strong><span>${data.total_spots}</span></div>
+                    <div class="metric"><strong>⏱️ Timestamp</strong><span>${new Date(data.timestamp).toLocaleString('fr-FR')}</span></div>
+                `;
+                
+                document.getElementById('timestamp').innerHTML = `Dernier rafraîchissement : ${new Date().toLocaleTimeString('fr-FR')}`;
+            } catch (error) {
+                document.getElementById('status').innerHTML = '❌ Impossible de contacter le serveur';
+                document.getElementById('status').className = 'status unhealthy';
+                document.getElementById('details').innerHTML = `
+                    <div class="metric"><strong>Erreur</strong><span>Vérifiez que le serveur est démarré</span></div>
+                `;
+            }
+        }
+        
+        checkHealth();
+        setInterval(checkHealth, 10000);
+    </script>
+</body>
+</html>

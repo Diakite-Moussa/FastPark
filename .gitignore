@@ -1,0 +1,31 @@
+# ── Environnement Python ─────────────────────────────────────
+fastpark_env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── Secrets & config sensible ────────────────────────────────
+.env
+server.crt
+server.key
+*.pem
+
+# ── Base de données (données locales, pas en prod) ───────────
+parking.db
+*.db-shm
+*.db-wal
+
+# ── Logs ─────────────────────────────────────────────────────
+*.log
+fastpark.log
+
+# ── OS & éditeurs ────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ── Docker volumes ───────────────────────────────────────────
+data/

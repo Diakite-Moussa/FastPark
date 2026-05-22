@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Générer icônes FastPark</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1a1a2e; color: white; text-align: center; }
+        .icon { display: inline-block; margin: 10px; text-align: center; vertical-align: top; }
+        canvas { background: linear-gradient(135deg, #667eea, #764ba2); border-radius: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+        button { background: #4CAF50; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; margin: 20px; font-size: 1em; }
+        a { color: white; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <h1>🅿️ Génération des icônes FastPark</h1>
+    <p>Cliquez sur chaque lien pour télécharger l'icône, puis placez-les dans le dossier <strong>static/</strong></p>
+    <button onclick="downloadAll()">📥 Télécharger toutes les icônes</button>
+    <div id="icons"></div>
+    
+    <script>
+        const sizes = [72, 96, 128, 144, 152, 192, 256, 512];
+        const container = document.getElementById('icons');
+        const icons = [];
+        
+        sizes.forEach(size => {
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            
+            // Fond gradient
+            const grad = ctx.createLinearGradient(0, 0, size, size);
+            grad.addColorStop(0, '#667eea');
+            grad.addColorStop(1, '#764ba2');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, size, size);
+            
+            // Arrondi
+            ctx.fillStyle = 'white';
+            ctx.font = `bold ${size * 0.42}px "Segoe UI", "Poppins"`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('🅿️', size/2, size/2);
+            
+            // Téléchargement
+            const link = document.createElement('a');
+            link.download = `icon-${size}.png`;
+            link.href = canvas.toDataURL();
+            link.innerHTML = `<div class="icon">📱 ${size}x${size}<br><canvas width="${size/2}" height="${size/2}" style="width:${size/2}px;height:${size/2}px;"></canvas></div>`;
+            const smallCanvas = link.querySelector('canvas');
+            if (smallCanvas) {
+                smallCanvas.getContext('2d').drawImage(canvas, 0, 0, size/2, size/2);
+            }
+            container.appendChild(link);
+            icons.push(link);
+        });
+        
+        function downloadAll() {
+            icons.forEach(link => {
+                setTimeout(() => link.click(), 100);
+            });
+            alert('Téléchargement des icônes en cours... Placez-les dans le dossier static/');
+        }
+    </script>
+</body>
+</html>

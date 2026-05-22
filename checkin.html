@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastPark - Scanner Gardien</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container { max-width: 550px; width: 100%; }
+        .card {
+            background: white;
+            border-radius: 30px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            margin-bottom: 20px;
+        }
+        .header { text-align: center; margin-bottom: 20px; }
+        .header h1 { color: #333; font-size: 1.8em; }
+        .header p  { color: #666; margin-top: 5px; }
+
+        /* ── Compteur session ── */
+        .session-counter {
+            display: flex; gap: 10px; justify-content: center;
+            margin-bottom: 18px; flex-wrap: wrap;
+        }
+        .counter-badge {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white; padding: 6px 14px; border-radius: 20px;
+            font-size: 12px; font-weight: 600;
+        }
+
+        .scanner-area {
+            background: #f0f2f5;
+            border-radius: 20px;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 25px;
+            border: 1px solid #ddd;
+        }
+        .scanner-icon { font-size: 50px; color: #667eea; margin-bottom: 10px; }
+
+        #qr-reader { width: 100%; border-radius: 12px; overflow: hidden; }
+        #qr-reader img { display: none !important; }
+        #qr-reader__scan_region { border-radius: 12px; overflow: hidden; }
+        #qr-reader__dashboard { display: none !important; }
+
+        .scanner-controls {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
+            margin-top: 12px;
+            flex-wrap: wrap;
+        }
+        .btn-scan {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 25px;
+            padding: 8px 18px;
+            font-size: 13px;
+            font-weight: bold;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all .2s;
+        }
+        .btn-scan:hover   { background: #43A047; }
+        /* ✅ Amélioration 2 — Bouton lampe torche */
+        .btn-scan.stop    { background: #e53935; }
+        .btn-scan.stop:hover { background: #c62828; }
+        .btn-scan.torch   { background: #FF9800; }
+        .btn-scan.torch:hover { background: #F57C00; }
+        .btn-scan.torch.on {
+            background: #FFC107; color: #333;
+            box-shadow: 0 0 14px rgba(255,193,7,.7);
+        }
+
+        .scanner-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 14px;
+            border-radius: 25px;
+            font-size: 13px;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        .scanner-status.active   { background: #4CAF50; color: white; }
+        .scanner-status.inactive { background: #ccc;    color: #555; }
+        .scanner-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%; background: white;
+            animation: blink 1s infinite;
+        }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+        .scanner-text   { color: #666; font-size: 13px; margin-top: 10px; }
+        .camera-select  {
+            margin-top: 8px; padding: 6px 10px;
+            border-radius: 8px; border: 1px solid #ccc;
+            font-size: 13px; max-width: 100%;
+        }
+
+        .input-group { margin-top: 10px; }
+        .input-group label { display: block; font-weight: 600; margin-bottom: 8px; color: #333; }
+        .input-group input {
+            width: 100%; padding: 14px;
+            border: 2px solid #e0e0e0; border-radius: 12px;
+            font-size: 20px; text-align: center; font-weight: bold;
+        }
+        .input-group input:focus { border-color: #667eea; outline: none; }
+
+        button.btn-validate {
+            width: 100%; padding: 14px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white; border: none; border-radius: 12px;
+            font-size: 16px; font-weight: bold;
+            cursor: pointer; margin-top: 15px; transition: transform .2s;
+        }
+        button.btn-validate:hover { transform: translateY(-2px); }
+
+        .result {
+            margin-top: 20px; padding: 15px;
+            border-radius: 12px; display: none;
+            text-align: center; font-weight: 500;
+        }
+        .result.success { background: #e8f5e9; color: #2e7d32; display: block; }
+        .result.error   { background: #ffebee; color: #c62828; display: block; }
+        .result.info    { background: #e3f2fd; color: #1565c0; display: block; }
+
+        .history { background: white; border-radius: 25px; padding: 20px; }
+        .history h3 {
+            margin-bottom: 15px; color: #333;
+            display: flex; align-items: center; gap: 8px; justify-content: space-between;
+        }
+        .history-refresh {
+            font-size: 12px; cursor: pointer; color: #667eea;
+            font-weight: 500; text-decoration: none;
+        }
+        .history-list { max-height: 300px; overflow-y: auto; }
+        .history-item { padding: 12px; border-bottom: 1px solid #eee; }
+        .history-item:last-child { border-bottom: none; }
+        .history-header { display: flex; justify-content: space-between; margin-bottom: 6px; }
+        .history-spot { font-weight: bold; color: #667eea; font-size: 1.1em; }
+        .history-time { color: #999; font-size: 11px; }
+        .history-client    { color: #333; font-size: .9em; margin-bottom: 4px; }
+        .history-university{ color: #666; font-size: .8em; }
+        .badge-success {
+            background: #e8f5e9; color: #2e7d32;
+            padding: 2px 8px; border-radius: 12px;
+            font-size: 11px; display: inline-block;
+        }
+        .empty-history { text-align: center; color: #999; padding: 30px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="card">
+        <div class="header">
+            <h1>🅿️ FastPark</h1>
+            <p>Interface agent de sécurité</p>
+        </div>
+
+        <!-- Compteur de session -->
+        <div class="session-counter">
+            <span class="counter-badge">✅ <span id="countToday">0</span> check-ins aujourd'hui</span>
+            <span class="counter-badge">⏱ <span id="countHour">0</span> cette heure</span>
+        </div>
+
+        <div class="scanner-area">
+            <div class="scanner-icon"><i class="fas fa-qrcode"></i></div>
+            <div id="qr-reader"></div>
+
+            <select id="cameraSelect" class="camera-select" style="display:none;">
+                <option value="">-- Choisir la caméra --</option>
+            </select>
+
+            <div class="scanner-controls">
+                <button class="btn-scan" id="btnStart" onclick="startScanner()">
+                    <i class="fas fa-camera"></i> Démarrer la caméra
+                </button>
+                <button class="btn-scan stop" id="btnStop" onclick="stopScanner()" style="display:none;">
+                    <i class="fas fa-stop"></i> Arrêter
+                </button>
+                <!-- ✅ Amélioration 2 — Lampe torche pour parkings sombres -->
+                <button class="btn-scan torch" id="btnTorch" onclick="toggleTorch()" style="display:none;" title="Lampe torche">
+                    <i class="fas fa-bolt"></i> Torche
+                </button>
+            </div>
+
+            <div id="scannerStatus" class="scanner-status inactive">
+                <span>● SCAN INACTIF</span>
+            </div>
+            <div class="scanner-text" id="scannerText">
+                <i class="fas fa-info-circle"></i> Cliquez sur "Démarrer la caméra" pour activer le scanner
+            </div>
+        </div>
+
+        <div class="input-group">
+            <label>📝 Saisie manuelle :</label>
+            <input type="number" id="qrInput" placeholder="Numéro de réservation" autocomplete="off">
+        </div>
+
+        <button class="btn-validate" onclick="validateCheckin()">
+            <i class="fas fa-check-circle"></i> Valider l'arrivée
+        </button>
+
+        <div id="result" class="result"></div>
+    </div>
+
+    <!-- ✅ Bug 3 fix — Historique chargé depuis l'API (plus de localStorage) -->
+    <div class="history">
+        <h3>
+            <span><i class="fas fa-history"></i> Dernières validations</span>
+            <a class="history-refresh" onclick="loadHistory()">🔄 Rafraîchir</a>
+        </h3>
+        <div id="historyList" class="history-list">
+            <div class="empty-history">Chargement…</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // ── État global ──────────────────────────────────────────
+    let html5QrCode    = null;
+    let scannerRunning = false;
+    let scanCooldown   = false;
+    let torchOn        = false;
+
+    // ─────────────────────────────────────────────────────────
+    // Vérification de session au chargement
+    // ─────────────────────────────────────────────────────────
+    (async () => {
+        try {
+            const r = await fetch('/api/check_auth', { credentials: 'include' });
+            const d = await r.json();
+            if (!d.logged_in) { window.location.href = '/'; return; }
+        } catch (_) { window.location.href = '/'; }
+    })();
+
+    // ─────────────────────────────────────────────────────────
+    // ✅ Amélioration 2 — Lampe torche
+    // ─────────────────────────────────────────────────────────
+    async function toggleTorch() {
+        if (!html5QrCode || !scannerRunning) return;
+        try {
+            torchOn = !torchOn;
+            await html5QrCode.applyVideoConstraints({ advanced: [{ torch: torchOn }] });
+            const btn = document.getElementById('btnTorch');
+            if (torchOn) {
+                btn.classList.add('on');
+                btn.innerHTML = '<i class="fas fa-bolt"></i> Torche ON';
+            } else {
+                btn.classList.remove('on');
+                btn.innerHTML = '<i class="fas fa-bolt"></i> Torche';
+            }
+        } catch (_) {
+            showResult('⚠️ Lampe torche non supportée sur cet appareil', 'error');
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // Scanner QR
+    // ─────────────────────────────────────────────────────────
+    async function startScanner() {
+        const status   = document.getElementById('scannerStatus');
+        const text     = document.getElementById('scannerText');
+        const btnStart = document.getElementById('btnStart');
+        const btnStop  = document.getElementById('btnStop');
+        const btnTorch = document.getElementById('btnTorch');
+        const camSel   = document.getElementById('cameraSelect');
+
+        let cameras;
+        try {
+            cameras = await Html5Qrcode.getCameras();
+        } catch (err) {
+            showResult("❌ Impossible d'accéder à la caméra : " + err, "error");
+            return;
+        }
+
+        if (!cameras || cameras.length === 0) {
+            showResult("❌ Aucune caméra détectée sur cet appareil", "error");
+            return;
+        }
+
+        if (cameras.length > 1) {
+            camSel.innerHTML = cameras.map(c =>
+                `<option value="${c.id}">${c.label || c.id}</option>`
+            ).join('');
+            camSel.style.display = 'block';
+        }
+
+        const backCam  = cameras.find(c => /back|rear|environment/i.test(c.label));
+        const cameraId = backCam ? backCam.id : cameras[0].id;
+        if (cameras.length > 1) camSel.value = cameraId;
+
+        html5QrCode = new Html5Qrcode("qr-reader");
+
+        try {
+            await html5QrCode.start(
+                { deviceId: { exact: cameraId } },
+                { fps: 10, qrbox: { width: 220, height: 220 }, aspectRatio: 1.0 },
+                onQrSuccess,
+                onQrError
+            );
+
+            scannerRunning = true;
+            status.className = 'scanner-status active';
+            status.innerHTML = '<span class="scanner-dot"></span> SCAN ACTIF';
+            text.innerHTML   = '<i class="fas fa-mobile-alt"></i> Préparez le QR code devant la caméra';
+            btnStart.style.display = 'none';
+            btnStop.style.display  = 'inline-flex';
+
+            // Vérifier le support de la torche
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+                const track  = stream.getVideoTracks()[0];
+                const caps   = track.getCapabilities ? track.getCapabilities() : {};
+                stream.getTracks().forEach(t => t.stop());
+                if (caps.torch) btnTorch.style.display = 'inline-flex';
+            } catch (_) {}
+
+        } catch (err) {
+            showResult("❌ Erreur démarrage caméra : " + err, "error");
+        }
+    }
+
+    async function stopScanner() {
+        if (html5QrCode && scannerRunning) {
+            await html5QrCode.stop();
+            html5QrCode.clear();
+            scannerRunning = false;
+        }
+        const btnTorch = document.getElementById('btnTorch');
+        btnTorch.style.display = 'none';
+        btnTorch.classList.remove('on');
+        torchOn = false;
+
+        document.getElementById('scannerStatus').className = 'scanner-status inactive';
+        document.getElementById('scannerStatus').innerHTML = '<span>● SCAN INACTIF</span>';
+        document.getElementById('scannerText').innerHTML =
+            '<i class="fas fa-info-circle"></i> Cliquez sur "Démarrer la caméra" pour activer le scanner';
+        document.getElementById('btnStart').style.display = 'inline-flex';
+        document.getElementById('btnStop').style.display  = 'none';
+        document.getElementById('cameraSelect').style.display = 'none';
+    }
+
+    function onQrSuccess(decodedText) {
+        if (scanCooldown) return;
+        scanCooldown = true;
+
+        let reservationId = decodedText.trim();
+        const urlMatch = decodedText.match(/res=(\d+)/);
+        const numMatch = decodedText.match(/\d+/);
+        if (urlMatch) reservationId = urlMatch[1];
+        else if (numMatch) reservationId = numMatch[0];
+
+        document.getElementById('qrInput').value = reservationId;
+        showResult(`📷 QR détecté : ${reservationId} — validation en cours…`, "info");
+
+        validateCheckin().finally(() => {
+            setTimeout(() => { scanCooldown = false; }, 3000);
+        });
+    }
+
+    function onQrError() { /* Silencieux */ }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        document.getElementById('cameraSelect').addEventListener('change', async function () {
+            if (!scannerRunning) return;
+            await stopScanner();
+            const camId = this.value;
+            html5QrCode = new Html5Qrcode("qr-reader");
+            await html5QrCode.start(
+                { deviceId: { exact: camId } },
+                { fps: 10, qrbox: { width: 220, height: 220 } },
+                onQrSuccess, onQrError
+            );
+            scannerRunning = true;
+            document.getElementById('scannerStatus').className = 'scanner-status active';
+            document.getElementById('scannerStatus').innerHTML = '<span class="scanner-dot"></span> SCAN ACTIF';
+            document.getElementById('btnStart').style.display = 'none';
+            document.getElementById('btnStop').style.display  = 'inline-flex';
+        });
+    });
+
+    // ─────────────────────────────────────────────────────────
+    // ✅ Bug 3 fix — Historique depuis l'API (plus localStorage)
+    // ─────────────────────────────────────────────────────────
+    let scanHistory   = [];
+    let countToday    = 0;
+    let countThisHour = 0;
+
+    async function loadHistory() {
+        try {
+            const r = await fetch('/api/checkin_history', { credentials: 'include' });
+            if (r.ok) {
+                const data = await r.json();
+                scanHistory = data.map(item => ({
+                    spot_id:    item.spot_id,
+                    username:   item.username   || 'Client',
+                    university: item.university || 'Non spécifiée',
+                    time:       item.time
+                        ? new Date(item.time).toLocaleTimeString('fr-FR')
+                        : '–',
+                }));
+                // Compteurs
+                countToday    = data.length;
+                const nowH    = new Date().getHours();
+                countThisHour = data.filter(d => {
+                    try { return new Date(d.time).getHours() === nowH; } catch(_){ return false; }
+                }).length;
+                displayHistory();
+                updateCounters();
+                return;
+            }
+        } catch (_) {}
+        displayHistory();
+    }
+
+    function updateCounters() {
+        document.getElementById('countToday').textContent = countToday;
+        document.getElementById('countHour').textContent  = countThisHour;
+    }
+
+    function displayHistory() {
+        const div = document.getElementById('historyList');
+        if (!div) return;
+        if (!scanHistory.length) {
+            div.innerHTML = '<div class="empty-history">📭 Aucune validation aujourd\'hui</div>';
+            return;
+        }
+        div.innerHTML = [...scanHistory].reverse().map(item => `
+            <div class="history-item">
+                <div class="history-header">
+                    <span class="history-spot"><i class="fas fa-parking"></i> Place ${item.spot_id}</span>
+                    <span class="history-time"><i class="far fa-clock"></i> ${item.time}</span>
+                </div>
+                <div class="history-client"><i class="fas fa-user"></i> ${item.username}</div>
+                <div class="history-university"><i class="fas fa-university"></i> ${item.university}</div>
+                <div style="margin-top:6px;">
+                    <span class="badge-success"><i class="fas fa-check"></i> Check-in validé</span>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function addToHistoryLocal(spotId, username, university) {
+        scanHistory.push({
+            spot_id:    spotId,
+            username:   username   || 'Client',
+            university: university || 'Non spécifiée',
+            time:       new Date().toLocaleTimeString('fr-FR'),
+        });
+        countToday++;
+        countThisHour++;
+        displayHistory();
+        updateCounters();
+        // Vibration de confirmation
+        if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // Validation check-in
+    // ─────────────────────────────────────────────────────────
+    async function getReservationDetails(reservationId) {
+        try {
+            const r = await fetch(`/api/reservation_details?res_id=${reservationId}`, { credentials: 'include' });
+            if (r.ok) return await r.json();
+        } catch (_) {}
+        return null;
+    }
+
+    async function validateCheckin() {
+        const input      = document.getElementById('qrInput');
+        const inputValue = input.value.trim();
+
+        if (!inputValue) {
+            showResult("Veuillez entrer le numéro de réservation", "error");
+            return;
+        }
+
+        showResult("⏳ Vérification…", "info");
+
+        try {
+            const reservationId = parseInt(inputValue);
+            const details       = await getReservationDetails(reservationId);
+
+            const response = await fetch('/api/validate_checkin', {
+                method:  'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ token: reservationId.toString(), reservation_id: reservationId }),
+            });
+
+            const data = await response.json();
+
+            if (data.success) {
+                showResult(`✅ ${data.message}`, "success");
+                addToHistoryLocal(data.spot_id, details?.username, details?.university);
+                // Recharger depuis l'API après 1s pour synchroniser
+                setTimeout(loadHistory, 1500);
+                input.value = '';
+            } else {
+                showResult(`❌ ${data.message}`, "error");
+            }
+        } catch (_) {
+            showResult("❌ Erreur de connexion au serveur", "error");
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // Affichage résultat + son de confirmation
+    // ─────────────────────────────────────────────────────────
+    function showResult(message, type) {
+        const div = document.getElementById('result');
+        div.textContent = message;
+        div.className   = `result ${type}`;
+        if (type === 'success') {
+            // Son de confirmation (deux bips montants)
+            try {
+                const ctx  = new (window.AudioContext || window.webkitAudioContext)();
+                const osc  = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.frequency.setValueAtTime(880,  ctx.currentTime);
+                osc.frequency.setValueAtTime(1100, ctx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0.25, ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+                osc.start(ctx.currentTime);
+                osc.stop(ctx.currentTime + 0.4);
+            } catch (_) {}
+            // Masquer après 8 secondes (plus long que l'original de 4s)
+            setTimeout(() => { div.style.display = 'none'; }, 8000);
+        }
+    }
+
+    document.getElementById('qrInput').addEventListener('keypress', e => {
+        if (e.key === 'Enter') validateCheckin();
+    });
+
+    // Chargement initial
+    loadHistory();
+</script>
+</body>
+</html>

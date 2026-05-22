@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastPark - Dashboard Pro</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:'Segoe UI',sans-serif;background:linear-gradient(135deg,#667eea,#764ba2);min-height:100vh;padding:20px}
+        .container{max-width:1400px;margin:0 auto}
+        .header{text-align:center;color:white;margin-bottom:24px}
+        .header h1{font-size:2.3em;margin-bottom:6px}
+        .header p{font-size:1em;opacity:.88}
+        .topbar{display:flex;justify-content:space-between;align-items:center;
+                background:rgba(255,255,255,.15);border-radius:14px;padding:10px 20px;
+                margin-bottom:24px;color:white;font-size:.92em;flex-wrap:wrap;gap:10px}
+        .topbar-left{display:flex;align-items:center;gap:12px}
+        .topbar-right{display:flex;gap:10px;flex-wrap:wrap}
+        .btn{padding:9px 18px;border:none;border-radius:10px;cursor:pointer;font-size:.88em;font-weight:600;transition:all .25s}
+        .btn-white{background:white;color:#667eea}
+        .btn-white:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,.2)}
+        .btn-red{background:#f44336;color:white}
+        .btn-red:hover{background:#d32f2f;transform:translateY(-2px)}
+        .btn-filter{background:rgba(255,255,255,.2);color:white;border:1.5px solid rgba(255,255,255,.4)}
+        .btn-filter:hover{background:rgba(255,255,255,.35)}
+        .btn-filter.active{background:white;color:#667eea}
+        .filters{display:flex;gap:10px;justify-content:center;margin-bottom:24px;flex-wrap:wrap}
+        .stats-container{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:18px;margin-bottom:24px}
+        .stat-card{background:white;border-radius:15px;padding:18px;text-align:center;box-shadow:0 8px 25px rgba(0,0,0,.18);transition:transform .3s}
+        .stat-card:hover{transform:translateY(-5px)}
+        .stat-card h3{color:#666;font-size:.8em;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px}
+        .stat-card .value{font-size:2.4em;font-weight:bold;color:#333}
+        .stat-card.free     .value{color:#4CAF50}
+        .stat-card.occupied .value{color:#f44336}
+        .stat-card.total    .value{color:#2196F3}
+        .stat-card.battery  .value{color:#FF9800}
+        .chart-box{background:white;border-radius:18px;padding:22px;margin-bottom:24px;box-shadow:0 8px 25px rgba(0,0,0,.18)}
+        .chart-box h2{margin-bottom:16px;color:#333;font-size:1.2em}
+        canvas{max-height:260px}
+        .parking-grid{background:white;border-radius:18px;padding:22px;box-shadow:0 8px 25px rgba(0,0,0,.18)}
+        .parking-grid h2{margin-bottom:16px;color:#333;font-size:1.2em}
+        .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(115px,1fr));gap:13px}
+        .empty-msg{grid-column:1/-1;text-align:center;padding:40px;color:#999}
+        .parking-spot{border-radius:12px;padding:13px;text-align:center;cursor:pointer;transition:all .3s;background:#f5f5f5}
+        .parking-spot:hover{transform:scale(1.07);box-shadow:0 5px 18px rgba(0,0,0,.2)}
+        .parking-spot.free    {background:linear-gradient(135deg,#4CAF50,#45a049);color:white}
+        .parking-spot.occupied{background:linear-gradient(135deg,#f44336,#da190b);color:white}
+        .parking-spot.reserved{background:linear-gradient(135deg,#FF9800,#f57c00);color:white}
+        .parking-spot.low-battery{outline:3px solid #FF9800;animation:lowbat 1.2s infinite}
+        @keyframes lowbat{0%,100%{box-shadow:0 0 0 0 rgba(255,152,0,.6)}50%{box-shadow:0 0 0 8px rgba(255,152,0,0)}}
+        .spot-id{font-size:1.4em;font-weight:bold;margin-bottom:4px}
+        .spot-status{font-size:.75em;text-transform:uppercase;font-weight:600}
+        .spot-battery{font-size:.68em;margin-top:6px;opacity:.9}
+        .alert-badge{background:#FF9800;color:white;font-size:.58em;border-radius:8px;padding:2px 6px;margin-top:4px;display:inline-block}
+        .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);justify-content:center;align-items:center;z-index:1000}
+        .modal-content{background:white;border-radius:18px;padding:28px;max-width:380px;width:90%;box-shadow:0 20px 50px rgba(0,0,0,.3)}
+        .modal-content h3{margin-bottom:14px;color:#333;font-size:1.2em}
+        .modal-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f0f0f0;color:#555;font-size:.92em}
+        .modal-row:last-of-type{border-bottom:none}
+        .modal-row strong{color:#333}
+        .close-btn{background:#2196F3;color:white;border:none;padding:11px;border-radius:10px;cursor:pointer;margin-top:14px;width:100%;font-size:.95em;font-weight:600}
+        .close-btn:hover{background:#1976D2}
+        .footer{display:flex;justify-content:space-between;align-items:center;margin-top:18px;color:rgba(255,255,255,.88);font-size:.88em;flex-wrap:wrap;gap:8px}
+        .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#4CAF50;margin-right:6px;animation:pulse 1.5s infinite}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+        .toast{position:fixed;bottom:20px;right:20px;background:#FF9800;color:white;padding:12px 20px;border-radius:10px;display:none;z-index:1001;font-size:.92em;box-shadow:0 4px 15px rgba(0,0,0,.2)}
+    </style>
+</head>
+<body>
+<div class="container">
+
+    <div class="header">
+        <h1>🅿️ FastPark Dashboard Pro</h1>
+        <p>Système de gestion de parking en temps réel</p>
+    </div>
+
+    <!-- Barre du haut -->
+    <div class="topbar">
+        <div class="topbar-left">
+            👤 Connecté : <strong id="usernameDisplay">…</strong>
+            &nbsp;|&nbsp;
+            🏫 <span id="uniDisplay">…</span>
+        </div>
+        <div class="topbar-right">
+            <button class="btn btn-white" onclick="exportCSV()">📥 Export CSV</button>
+            <button class="btn btn-red" onclick="doLogout()">🚪 Déconnexion</button>
+        </div>
+    </div>
+
+    <!-- Filtres -->
+    <div class="filters">
+        <button class="btn btn-filter active" data-filter="all">📍 Toutes</button>
+        <button class="btn btn-filter" data-filter="free">🟢 Libres</button>
+        <button class="btn btn-filter" data-filter="occupied">🔴 Occupées</button>
+        <button class="btn btn-filter" data-filter="reserved">🟠 Réservées</button>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-container">
+        <div class="stat-card total">   <h3>Total Places</h3>    <div class="value" id="totalSpots">–</div></div>
+        <div class="stat-card free">    <h3>Places Libres</h3>   <div class="value" id="freeSpots">–</div></div>
+        <div class="stat-card occupied"><h3>Places Occupées</h3> <div class="value" id="occupiedSpots">–</div></div>
+        <div class="stat-card battery"> <h3>Batterie Moy.</h3>   <div class="value" id="avgBattery">–</div></div>
+    </div>
+
+    <!-- Graphique -->
+    <div class="chart-box">
+        <h2>📊 Évolution de l'occupation (10 dernières sync)</h2>
+        <canvas id="chart"></canvas>
+    </div>
+
+    <!-- Grille des places -->
+    <div class="parking-grid">
+        <h2>🗺️ Plan du Parking</h2>
+        <div class="grid" id="grid">
+            <div class="empty-msg">⏳ Chargement…</div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+        <div><span class="dot"></span>Rafraîchissement toutes les 3 s</div>
+        <div>Dernière sync : <strong id="lastUpdate">–</strong></div>
+    </div>
+</div>
+
+<!-- Modal -->
+<div id="modal" class="modal">
+    <div class="modal-content">
+        <h3 id="mTitle">Détails</h3>
+        <div class="modal-row"><strong>Statut</strong>      <span id="mStatus">–</span></div>
+        <div class="modal-row"><strong>Batterie</strong>    <span id="mBattery">–</span></div>
+        <div class="modal-row"><strong>Température</strong> <span id="mTemp">–</span></div>
+        <div class="modal-row"><strong>Fiabilité</strong>   <span id="mConf">–</span></div>
+        <div class="modal-row"><strong>Source</strong>      <span id="mSource">–</span></div>
+        <div class="modal-row"><strong>Mis à jour</strong>  <span id="mUpdated">–</span></div>
+        <button class="close-btn" onclick="closeModal()">✖ Fermer</button>
+    </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+    // ✅ URL relative — même origine que Flask → cookies envoyés automatiquement
+    const API = '';
+    let allSpots = [];
+    let filter   = 'all';
+    let chart;
+    const lowBatAlerted = new Set();
+
+    // ── Auth check ────────────────────────────────────────────
+    async function checkAuth() {
+        try {
+            const r    = await fetch(API + '/api/check_auth', { credentials: 'include' });
+            const data = await r.json();
+            if (!data.logged_in) {
+                window.location.href = '/';
+                return false;
+            }
+            document.getElementById('usernameDisplay').textContent = data.username || '–';
+            document.getElementById('uniDisplay').textContent      = data.university || '–';
+            return true;
+        } catch {
+            window.location.href = '/';
+            return false;
+        }
+    }
+
+    async function doLogout() {
+        await fetch(API + '/api/logout', { method: 'POST', credentials: 'include' });
+        window.location.href = '/';
+    }
+
+    function exportCSV() {
+        window.open(API + '/api/export/csv', '_blank');
+    }
+
+    // ── Données ───────────────────────────────────────────────
+    async function fetchSpots() {
+        try {
+            const r     = await fetch(API + '/api/spots', { credentials: 'include' });
+            if (r.status === 401) { window.location.href = '/'; return; }
+            const spots = await r.json();
+            allSpots = spots;
+            renderStats(spots);
+            renderGrid(spots);
+            updateChart(spots);
+            checkLowBattery(spots);
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('fr-FR');
+        } catch(e) { console.error('[spots]', e); }
+    }
+
+    async function fetchStats() {
+        try {
+            const r = await fetch(API + '/api/stats', { credentials: 'include' });
+            if (!r.ok) return;
+            const s = await r.json();
+            document.getElementById('totalSpots').textContent    = s.total_spots;
+            document.getElementById('freeSpots').textContent     = s.free;
+            document.getElementById('occupiedSpots').textContent = s.occupied;
+            document.getElementById('avgBattery').textContent    =
+                s.avg_battery_percent > 0 ? s.avg_battery_percent + ' %' : '–';
+        } catch(e) { console.error('[stats]', e); }
+    }
+
+    // ── Stats locales ─────────────────────────────────────────
+    function renderStats(spots) {
+        if (!spots.length) return;
+        const free = spots.filter(s => s.status === 'free').length;
+        const occ  = spots.filter(s => s.status === 'occupied').length;
+        const bats = spots.map(s => s.battery||0).filter(b => b > 0);
+        const avg  = bats.length
+            ? (bats.reduce((a,b)=>a+b,0)/bats.length).toFixed(0)+' %' : '–';
+        document.getElementById('totalSpots').textContent    = spots.length;
+        document.getElementById('freeSpots').textContent     = free;
+        document.getElementById('occupiedSpots').textContent = occ;
+        document.getElementById('avgBattery').textContent    = avg;
+    }
+
+    // ── Grille ────────────────────────────────────────────────
+    function renderGrid(spots) {
+        const filtered = filter === 'all' ? spots : spots.filter(s => s.status === filter);
+        const g = document.getElementById('grid');
+        g.innerHTML = '';
+
+        if (!filtered.length) {
+            g.innerHTML = '<div class="empty-msg">Aucune place correspondante</div>';
+            return;
+        }
+        filtered.sort((a,b) => a.spot_id.localeCompare(b.spot_id));
+        filtered.forEach(spot => {
+            const d   = document.createElement('div');
+            d.className = 'parking-spot ' + (spot.status || 'unknown');
+            if (spot.battery > 0 && spot.battery < 20) d.classList.add('low-battery');
+            d.onclick = () => showModal(spot);
+            const icon = spot.status==='free'?'🟢':spot.status==='occupied'?'🔴':'🟠';
+            const bat  = spot.battery > 0 ? (spot.battery<20?'⚠️':'🔋') + ' '+spot.battery+'%' : '';
+            d.innerHTML =
+                '<div class="spot-id">'+spot.spot_id+'</div>'+
+                '<div class="spot-status">'+icon+' '+spot.status+'</div>'+
+                '<div class="spot-battery">'+bat+'</div>'+
+                (spot.battery>0&&spot.battery<20?'<div class="alert-badge">Batterie faible</div>':'');
+            g.appendChild(d);
+        });
+    }
+
+    // ── Graphique ─────────────────────────────────────────────
+    function initChart() {
+        const ctx = document.getElementById('chart').getContext('2d');
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label:'Libres',   data:[], borderColor:'#4CAF50', backgroundColor:'rgba(76,175,80,.1)',  tension:.4, fill:true },
+                    { label:'Occupées', data:[], borderColor:'#f44336', backgroundColor:'rgba(244,67,54,.1)', tension:.4, fill:true }
+                ]
+            },
+            options: { responsive:true, maintainAspectRatio:true,
+                       plugins:{ legend:{ position:'top' } } }
+        });
+    }
+
+    function updateChart(spots) {
+        if (!chart) return;
+        const free = spots.filter(s=>s.status==='free').length;
+        const occ  = spots.filter(s=>s.status==='occupied').length;
+        const now  = new Date().toLocaleTimeString('fr-FR');
+        chart.data.labels.push(now);
+        chart.data.datasets[0].data.push(free);
+        chart.data.datasets[1].data.push(occ);
+        if (chart.data.labels.length > 10) {
+            chart.data.labels.shift();
+            chart.data.datasets[0].data.shift();
+            chart.data.datasets[1].data.shift();
+        }
+        chart.update();
+    }
+
+    // ── Alertes batterie ──────────────────────────────────────
+    function checkLowBattery(spots) {
+        spots.forEach(s => {
+            if (s.battery > 0 && s.battery < 20 && !lowBatAlerted.has(s.spot_id)) {
+                lowBatAlerted.add(s.spot_id);
+                showToast(`⚠️ Batterie faible — place ${s.spot_id} (${s.battery}%)`);
+                setTimeout(() => lowBatAlerted.delete(s.spot_id), 60000);
+            }
+        });
+    }
+
+    function showToast(msg) {
+        const t = document.getElementById('toast');
+        t.textContent = msg;
+        t.style.display = 'block';
+        setTimeout(() => { t.style.display = 'none'; }, 4000);
+    }
+
+    // ── Modal ─────────────────────────────────────────────────
+    function showModal(s) {
+        document.getElementById('mTitle').textContent   = 'Place ' + s.spot_id;
+        document.getElementById('mStatus').textContent  = s.status || '–';
+        document.getElementById('mBattery').textContent = s.battery    ? s.battery+' %'    : '–';
+        document.getElementById('mTemp').textContent    = s.temperature ? s.temperature+' °C' : '–';
+        document.getElementById('mConf').textContent    = s.confidence  ? (s.confidence*100).toFixed(0)+' %' : '–';
+        document.getElementById('mSource').textContent  = s.source || '–';
+        document.getElementById('mUpdated').textContent = s.updated_at
+            ? new Date(s.updated_at).toLocaleString('fr-FR') : '–';
+        document.getElementById('modal').style.display = 'flex';
+    }
+    function closeModal() { document.getElementById('modal').style.display = 'none'; }
+    window.addEventListener('click', e => {
+        if (e.target === document.getElementById('modal')) closeModal();
+    });
+
+    // ── Filtres ───────────────────────────────────────────────
+    document.querySelectorAll('.btn-filter').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.btn-filter').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            filter = btn.dataset.filter;
+            renderGrid(allSpots);
+        });
+    });
+
+    // ── Boucle principale ─────────────────────────────────────
+    async function refresh() { await fetchSpots(); await fetchStats(); }
+
+    (async () => {
+        const ok = await checkAuth();
+        if (!ok) return;
+        initChart();
+        await refresh();
+        setInterval(refresh, 3000);
+    })();
+</script>
+</body>
+</html>

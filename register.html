@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FastPark - Inscription</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            font-family:'Poppins',sans-serif;
+            background:linear-gradient(135deg,#667eea,#764ba2);
+            min-height:100vh; display:flex;
+            justify-content:center; align-items:center; padding:20px;
+        }
+        .box {
+            background:white; border-radius:24px;
+            padding:40px 36px; width:100%; max-width:480px;
+            box-shadow:0 25px 60px rgba(0,0,0,.3);
+            animation:up .5s ease-out;
+        }
+        @keyframes up { from{opacity:0;transform:translateY(24px)} to{opacity:1;transform:translateY(0)} }
+        .logo { text-align:center; margin-bottom:16px; }
+        .logo i {
+            font-size:48px;
+            background:linear-gradient(135deg,#667eea,#764ba2);
+            -webkit-background-clip:text; background-clip:text; color:transparent;
+        }
+        h1  { text-align:center; color:#333; font-weight:700; font-size:1.7em; margin-bottom:6px; }
+        .sub { text-align:center; color:#888; margin-bottom:28px; font-size:.9em; }
+
+        .input-group { position:relative; margin-bottom:16px; }
+        .input-group > i.icon {
+            position:absolute; left:14px; top:50%;
+            transform:translateY(-50%); color:#aaa;
+            pointer-events:none;
+        }
+        input, select {
+            width:100%; padding:12px 12px 12px 42px;
+            border:2px solid #e8e8e8; border-radius:10px;
+            font-size:.95em; font-family:'Poppins',sans-serif;
+            outline:none; transition:border .25s;
+            background:white; color:#333;
+        }
+        input:focus, select:focus { border-color:#667eea; }
+        input.valid   { border-color:#4caf50; }
+        input.invalid { border-color:#f44336; }
+
+        /* Indicateur force mot de passe */
+        .pwd-strength-wrap {
+            margin-top:-10px;
+            margin-bottom:14px;
+            display:none;
+        }
+        .pwd-bar-bg {
+            height:5px; border-radius:4px;
+            background:#e8e8e8; overflow:hidden;
+        }
+        .pwd-bar {
+            height:100%; width:0%;
+            transition:all .35s; border-radius:4px;
+        }
+        .pwd-label {
+            font-size:.75em; color:#888;
+            margin-top:4px; display:block;
+        }
+
+        /* Règles mot de passe */
+        .pwd-rules {
+            background:#f9f9f9; border-radius:10px;
+            padding:10px 14px; margin-bottom:16px;
+            display:none;
+        }
+        .pwd-rules p {
+            font-size:.78em; margin:3px 0;
+            color:#aaa; transition:color .25s;
+        }
+        .pwd-rules p.ok  { color:#4caf50; }
+        .pwd-rules p i   { margin-right:6px; width:12px; }
+
+        .msg {
+            padding:12px 14px; border-radius:10px;
+            margin-bottom:16px; font-size:.88em;
+            display:none; font-weight:500;
+        }
+        .msg.error   { background:#ffebee; color:#c62828; border-left:4px solid #f44336; }
+        .msg.success { background:#e8f5e9; color:#2e7d32; border-left:4px solid #4CAF50; }
+        .msg.warning { background:#fff8e1; color:#f57f17; border-left:4px solid #ffc107; }
+        .msg.show    { display:block; }
+
+        button {
+            width:100%; padding:13px;
+            background:linear-gradient(135deg,#667eea,#764ba2);
+            color:white; border:none; border-radius:10px;
+            font-size:1em; font-weight:600; cursor:pointer;
+            font-family:'Poppins',sans-serif; transition:all .25s;
+        }
+        button:hover { opacity:.88; transform:translateY(-1px); }
+        button:disabled { opacity:.6; pointer-events:none; }
+
+        .link { text-align:center; margin-top:20px; font-size:.9em; color:#888; }
+        .link a { color:#667eea; text-decoration:none; font-weight:600; }
+        .link a:hover { color:#764ba2; }
+
+        /* hint sous les champs */
+        .field-hint {
+            font-size:.73em; color:#aaa;
+            margin-top:-10px; margin-bottom:12px;
+            padding-left:4px;
+        }
+    </style>
+</head>
+<body>
+<div class="box">
+    <div class="logo"><i class="fas fa-parking"></i></div>
+    <h1>FastPark</h1>
+    <div class="sub">Créez votre compte</div>
+
+    <div class="msg" id="msg"></div>
+
+    <!-- Nom d'utilisateur -->
+    <div class="input-group">
+        <i class="fas fa-user icon"></i>
+        <input type="text" id="username"
+               placeholder="Nom d'utilisateur"
+               maxlength="30"
+               oninput="validateUsername(this)">
+    </div>
+    <p class="field-hint">3 à 30 caractères — lettres, chiffres, _ et -</p>
+
+    <!-- Email -->
+    <div class="input-group">
+        <i class="fas fa-envelope icon"></i>
+        <input type="email" id="email"
+               placeholder="Adresse email"
+               maxlength="100"
+               oninput="validateEmail(this)">
+    </div>
+
+    <!-- Mot de passe -->
+    <div class="input-group">
+        <i class="fas fa-lock icon"></i>
+        <input type="password" id="password"
+               placeholder="Mot de passe (min. 8 caractères)"
+               oninput="onPasswordInput(this.value)"
+               onfocus="document.getElementById('pwd-rules').style.display='block'">
+    </div>
+
+    <!-- Barre de force -->
+    <div class="pwd-strength-wrap" id="pwd-strength-wrap">
+        <div class="pwd-bar-bg">
+            <div class="pwd-bar" id="pwd-bar"></div>
+        </div>
+        <small class="pwd-label" id="pwd-label"></small>
+    </div>
+
+    <!-- Règles mot de passe -->
+    <div class="pwd-rules" id="pwd-rules">
+        <p id="rule-len">  <i class="fas fa-circle"></i> Au moins 8 caractères</p>
+        <p id="rule-upper"><i class="fas fa-circle"></i> Une lettre majuscule</p>
+        <p id="rule-num">  <i class="fas fa-circle"></i> Un chiffre</p>
+        <p id="rule-spec"> <i class="fas fa-circle"></i> Un caractère spécial (!@#...)</p>
+    </div>
+
+    <!-- Université -->
+    <div class="input-group">
+        <i class="fas fa-university icon"></i>
+        <select id="university">
+            <option value="">Sélectionnez votre université</option>
+            <option>Université Hassan II - FST</option>
+            <option>Université Hassan II - FSJES</option>
+            <option>Université Hassan II - FLS</option>
+            <option>Université Hassan II - FMPC</option>
+            <option>ENCG Casablanca</option>
+            <option>EMI Casablanca</option>
+            <option>ENSA Casablanca</option>
+            <option>Mundiapolis</option>
+            <option>UIC</option>
+            <option>ISCAE</option>
+            <option>ESITH</option>
+            <option>EMSI</option>
+            <option>INPT</option>
+            <option>Université Privée de Marrakech (Casa)</option>
+        </select>
+    </div>
+
+    <button id="btn" onclick="doRegister()">
+        <i class="fas fa-user-plus"></i> Créer mon compte
+    </button>
+
+    <div class="link">
+        Déjà un compte ? <a href="/">Se connecter</a>
+    </div>
+</div>
+
+<script>
+    // ──────────────────────────────────────────────────────────
+    // Validation username en temps réel
+    // ──────────────────────────────────────────────────────────
+    function validateUsername(input) {
+        const val = input.value.trim();
+        const ok  = val.length >= 3 && val.length <= 30 && /^[a-zA-Z0-9_-]+$/.test(val);
+        input.classList.toggle('valid',   ok && val.length > 0);
+        input.classList.toggle('invalid', !ok && val.length > 0);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // Validation email en temps réel
+    // ──────────────────────────────────────────────────────────
+    function validateEmail(input) {
+        const val = input.value.trim();
+        const ok  = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
+        input.classList.toggle('valid',   ok);
+        input.classList.toggle('invalid', !ok && val.length > 0);
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // Indicateur force + règles mot de passe
+    // ──────────────────────────────────────────────────────────
+    function onPasswordInput(pwd) {
+        const wrap  = document.getElementById('pwd-strength-wrap');
+        const bar   = document.getElementById('pwd-bar');
+        const label = document.getElementById('pwd-label');
+
+        // Règles
+        const rules = {
+            len:   pwd.length >= 8,
+            upper: /[A-Z]/.test(pwd),
+            num:   /[0-9]/.test(pwd),
+            spec:  /[^a-zA-Z0-9]/.test(pwd)
+        };
+        setRule('rule-len',   rules.len);
+        setRule('rule-upper', rules.upper);
+        setRule('rule-num',   rules.num);
+        setRule('rule-spec',  rules.spec);
+
+        if (!pwd) { wrap.style.display = 'none'; return; }
+        wrap.style.display = 'block';
+
+        // Score
+        const score = Object.values(rules).filter(Boolean).length;
+        const levels = [
+            { pct: '25%', color: '#f44336', text: 'Très faible' },
+            { pct: '50%', color: '#ff9800', text: 'Faible'      },
+            { pct: '75%', color: '#ffc107', text: 'Moyen'       },
+            { pct: '88%', color: '#8bc34a', text: 'Fort'        },
+            { pct:'100%', color: '#4caf50', text: 'Très fort'   },
+        ];
+        const lvl = levels[Math.min(score, 4)];
+        bar.style.width      = lvl.pct;
+        bar.style.background = lvl.color;
+        label.textContent    = lvl.text;
+        label.style.color    = lvl.color;
+    }
+
+    function setRule(id, ok) {
+        const el = document.getElementById(id);
+        el.classList.toggle('ok', ok);
+        el.querySelector('i').className = ok ? 'fas fa-check-circle' : 'fas fa-circle';
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // Soumission du formulaire
+    // ──────────────────────────────────────────────────────────
+    async function doRegister() {
+        const username   = document.getElementById('username').value.trim();
+        const email      = document.getElementById('email').value.trim();
+        const password   = document.getElementById('password').value;
+        const university = document.getElementById('university').value;
+        const btn        = document.getElementById('btn');
+
+        hideMsg();
+
+        // ── Validations frontend ───────────────────────────────
+        if (!username || !email || !password || !university) {
+            showMsg('Tous les champs sont requis.', 'error');
+            return;
+        }
+        if (username.length < 3 || username.length > 30) {
+            showMsg('Le nom d\'utilisateur doit faire entre 3 et 30 caractères.', 'error');
+            return;
+        }
+        if (!/^[a-zA-Z0-9_-]+$/.test(username)) {
+            showMsg('Le nom d\'utilisateur ne peut contenir que des lettres, chiffres, _ et -.', 'error');
+            return;
+        }
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            showMsg('Adresse email invalide.', 'error');
+            return;
+        }
+        if (password.length < 8) {
+            showMsg('Le mot de passe doit contenir au moins 8 caractères.', 'error');
+            return;
+        }
+
+        // ── Envoi ─────────────────────────────────────────────
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Inscription en cours…';
+
+        try {
+            const res  = await fetch('/api/register', {
+                method:      'POST',
+                headers:     { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body:        JSON.stringify({ username, email, password, university })
+            });
+            const data = await res.json();
+
+            if (res.status === 429) {
+                showMsg('⏳ Trop de tentatives. Veuillez patienter une minute.', 'warning');
+                return;
+            }
+
+            if (data.success) {
+                showMsg('✅ Compte créé avec succès ! Redirection…', 'success');
+                setTimeout(() => window.location.href = '/', 1800);
+            } else {
+                showMsg('❌ ' + (data.message || 'Erreur inconnue.'), 'error');
+            }
+        } catch (e) {
+            showMsg('❌ Impossible de joindre le serveur. Vérifiez que app.py tourne.', 'error');
+        } finally {
+            if (!document.querySelector('.msg.success.show')) {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="fas fa-user-plus"></i> Créer mon compte';
+            }
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────
+    // Helpers affichage messages
+    // ──────────────────────────────────────────────────────────
+    function showMsg(text, type) {
+        const el = document.getElementById('msg');
+        el.textContent = text;
+        el.className   = 'msg ' + type + ' show';
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function hideMsg() {
+        document.getElementById('msg').className = 'msg';
+    }
+
+    // Soumettre avec Entrée
+    document.addEventListener('keypress', e => {
+        if (e.key === 'Enter') doRegister();
+    });
+</script>
+</body>
+</html>

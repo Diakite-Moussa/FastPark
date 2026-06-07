@@ -157,6 +157,9 @@ def csrf_required(f):
     def decorated(*args, **kwargs):
         if app.config.get('TESTING'):
             return f(*args, **kwargs)
+        # Desactiver CSRF si variable d'env presente (utile pendant le deploiement)
+        if os.environ.get('DISABLE_CSRF') == 'true':
+            return f(*args, **kwargs)
         token_header  = request.headers.get('X-CSRF-Token', '')
         token_session = session.get('csrf_token', '')
         if not token_session or not secrets.compare_digest(token_header, token_session):

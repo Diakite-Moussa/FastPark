@@ -3,13 +3,12 @@ from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from functools import wraps
-import sqlite3
-import bcrypt
 import csv
 import json
 import threading
 import time
 import logging
+from logging.handlers import RotatingFileHandler
 import socket
 from io import StringIO
 from datetime import datetime, timedelta
@@ -19,9 +18,15 @@ import paho.mqtt.client as mqtt
 import random
 import qrcode
 import secrets
+import bcrypt
 from io import BytesIO
 import base64
 
+from db import (
+    get_conn, ph, sql_now, all_ddl,
+    insert_or_ignore_spot, insert_or_ignore_qr, lastrowid,
+    USE_POSTGRES
+)
 from mcp import mcp, FastParkMCP
 
 DEMARRAGE_TIME = time.time()
@@ -29,7 +34,6 @@ DEMARRAGE_TIME = time.time()
 # ─────────────────────────────────────────────────────────────
 # Configuration
 # ─────────────────────────────────────────────────────────────
-
 MQTT_BROKER = os.environ.get("MQTT_BROKER", "172.16.2.64")
 MQTT_PORT   = int(os.environ.get("MQTT_PORT", 1883))
 MQTT_TOPIC  = "fastpark/sensors/#"
@@ -38,27 +42,39 @@ _data_dir = "/app/data" if os.path.isdir("/app/data") else os.path.dirname(os.pa
 DB_PATH   = os.path.join(_data_dir, "parking.db")
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 
+# Injecter DB_PATH dans db.py uniquement si pas déjà défini par les tests
+if not os.environ.get("_FASTPARK_DB_PATH"):
+    os.environ["_FASTPARK_DB_PATH"] = DB_PATH
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
 
-# ── CORS restreint en production ─────────────────────────────
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:5000").split(",")
 CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=True)
 
-# ── Rate Limiter ──────────────────────────────────────────────
 limiter = Limiter(
     get_remote_address,
     app=app,
-    default_limits=[],          # pas de limite globale
+    default_limits=[],
     storage_uri="memory://"
 )
 
-# ── Logging : stdout + fichier si possible ───────────────────
 _log_handlers = [logging.StreamHandler()]
-try:
-    _log_handlers.append(logging.FileHandler(os.path.join(_data_dir, "fastpark.log")))
-except Exception:
-    pass
+
+# En production (Railway), le filesystem est éphémère — logger uniquement sur stdout.
+# En développement local, activer aussi le fichier tournant.
+_is_production = bool(os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
+if not _is_production:
+    try:
+        _rotating_handler = RotatingFileHandler(
+            os.path.join(_data_dir, "fastpark.log"),
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8"
+        )
+        _log_handlers.append(_rotating_handler)
+    except Exception:
+        pass
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,9 +82,9 @@ logging.basicConfig(
     handlers=_log_handlers
 )
 logger = logging.getLogger(__name__)
-logger.info(f"DB_PATH = {DB_PATH}")
+logger.info(f"DB_PATH = {DB_PATH} | PostgreSQL = {USE_POSTGRES}")
 
-# ── Coordonnées GPS des universités (pour Google Maps) ───────
+# ── Coordonnées GPS ──────────────────────────────────────────
 UNIVERSITY_GPS = {
     "Université Hassan II - FST":          {"lat": 33.5832, "lng": -7.5504},
     "Université Hassan II - FSJES":         {"lat": 33.5729, "lng": -7.6059},
@@ -86,16 +102,11 @@ UNIVERSITY_GPS = {
     "Université Privée de Marrakech (Casa)":{"lat": 33.5344, "lng": -7.6614},
 }
 
-# ── Injecter DB_PATH dans l'instance MCP (chemin absolu) ────
 mcp.db_path = DB_PATH
 
-# ── Buffer MQTT ──────────────────────────────────────────────
 mqtt_buffer    = deque(maxlen=1000)
 mqtt_available = True
 
-# ─────────────────────────────────────────────────────────────
-# Universités (14 universités, 3 places chacune)
-# ─────────────────────────────────────────────────────────────
 UNIVERSITIES = [
     "Université Hassan II - FST",
     "Université Hassan II - FSJES",
@@ -112,26 +123,52 @@ UNIVERSITIES = [
     "INPT",
     "Université Privée de Marrakech (Casa)"
 ]
-
 SPOTS = ["A1", "A2", "A3"]
 
 # ─────────────────────────────────────────────────────────────
 # Helpers bcrypt
 # ─────────────────────────────────────────────────────────────
 def hash_password(password: str) -> str:
-    """Génère un hash bcrypt du mot de passe."""
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
 def check_password(password: str, stored_hash: str) -> bool:
-    """Vérifie un mot de passe contre son hash bcrypt (compatible aussi SHA-256 legacy)."""
     try:
-        # Tentative bcrypt
         return bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8'))
     except Exception:
-        # Fallback SHA-256 pour les anciens comptes (migration transparente)
         import hashlib
-        sha_hash = hashlib.sha256(password.encode()).hexdigest()
-        return sha_hash == stored_hash
+        return hashlib.sha256(password.encode()).hexdigest() == stored_hash
+
+# ─────────────────────────────────────────────────────────────
+# Protection CSRF — double-submit cookie
+# ─────────────────────────────────────────────────────────────
+def generate_csrf_token() -> str:
+    """Génère ou récupère le token CSRF de la session."""
+    if 'csrf_token' not in session:
+        session['csrf_token'] = secrets.token_hex(32)
+    return session['csrf_token']
+
+def csrf_required(f):
+    """
+    Décorateur CSRF : vérifie que le header X-CSRF-Token correspond
+    au token stocké en session. À appliquer sur tous les POST sensibles.
+    Exempté en mode TESTING pour les tests automatisés.
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if app.config.get('TESTING'):
+            return f(*args, **kwargs)
+        token_header  = request.headers.get('X-CSRF-Token', '')
+        token_session = session.get('csrf_token', '')
+        if not token_session or not secrets.compare_digest(token_header, token_session):
+            logger.warning(f"CSRF invalide sur {request.path} — IP: {request.remote_addr}")
+            return jsonify({"error": "Token CSRF invalide"}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+@app.route('/api/csrf_token', methods=['GET'])
+def get_csrf_token():
+    """Le frontend appelle cette route au chargement pour obtenir son token CSRF."""
+    return jsonify({"csrf_token": generate_csrf_token()})
 
 # ─────────────────────────────────────────────────────────────
 # Décorateur d'authentification
@@ -145,144 +182,69 @@ def login_required(f):
     return decorated
 
 # ─────────────────────────────────────────────────────────────
-# Base de données — SANS destruction des données existantes
+# Initialisation de la base de données
 # ─────────────────────────────────────────────────────────────
 def init_db():
-    """
-    Initialise les tables si elles n'existent pas (CREATE TABLE IF NOT EXISTS).
-    N'efface jamais les données existantes.
-    Insère les places manquantes uniquement (INSERT OR IGNORE).
-    Crée le compte admin uniquement s'il n'existe pas (INSERT OR IGNORE).
-    """
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c    = conn.cursor()
 
-    # ── Création des tables (idempotent) ────────────────────
-    c.execute('''CREATE TABLE IF NOT EXISTS parking_spots (
-        spot_id     TEXT,
-        university  TEXT,
-        status      TEXT,
-        battery     INTEGER,
-        temperature REAL,
-        confidence  REAL,
-        updated_at  TEXT,
-        source      TEXT,
-        PRIMARY KEY (spot_id, university)
-    )''')
+    # Créer toutes les tables
+    for ddl in all_ddl():
+        c.execute(ddl)
 
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        username      TEXT UNIQUE NOT NULL,
-        email         TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        university    TEXT NOT NULL,
-        role          TEXT DEFAULT 'user',
-        created_at    TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
+    # ── Index pour les performances ──────────────────────────
+    c.execute("""CREATE INDEX IF NOT EXISTS idx_res_expires
+                 ON reservations(status, expires_at)""")
+    c.execute("""CREATE INDEX IF NOT EXISTS idx_res_user
+                 ON reservations(user_id, status)""")
+    c.execute("""CREATE INDEX IF NOT EXISTS idx_spots_uni
+                 ON parking_spots(university)""")
+    c.execute("""CREATE INDEX IF NOT EXISTS idx_history_spot
+                 ON parking_history(spot_id, university)""")
+    c.execute("""CREATE INDEX IF NOT EXISTS idx_checkin_date
+                 ON checkin_log(validated_at)""")
 
-    c.execute('''CREATE TABLE IF NOT EXISTS parking_history (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        spot_id    TEXT,
-        university TEXT,
-        status     TEXT,
-        changed_at TEXT
-    )''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS reservations (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        spot_id     TEXT,
-        university  TEXT,
-        user_id     INTEGER,
-        username    TEXT,
-        reserved_at TEXT,
-        expires_at  TEXT,
-        status      TEXT DEFAULT 'active'
-    )''')
-
-    # ── Table historique chat (Bug 3 fix) ────────────────────
-    c.execute('''CREATE TABLE IF NOT EXISTS chat_history (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id    INTEGER NOT NULL,
-        role       TEXT NOT NULL,
-        message    TEXT NOT NULL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id)
-    )''')
-
-    # ── Table historique checkin (Bug 3 fix) ─────────────────
-    c.execute('''CREATE TABLE IF NOT EXISTS checkin_log (
-        id             INTEGER PRIMARY KEY AUTOINCREMENT,
-        reservation_id INTEGER,
-        spot_id        TEXT,
-        university     TEXT,
-        username       TEXT,
-        validated_by   TEXT,
-        validated_at   TEXT DEFAULT CURRENT_TIMESTAMP
-    )''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS qr_codes (
-        id             INTEGER PRIMARY KEY AUTOINCREMENT,
-        reservation_id INTEGER,
-        code           TEXT UNIQUE NOT NULL,
-        used           INTEGER DEFAULT 0,
-        used_at        TEXT,
-        created_at     TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (reservation_id) REFERENCES reservations(id)
-    )''')
-
-    # ── Insertion des places manquantes seulement ────────────
+    # Insérer les places manquantes
     inserted = 0
+    now_str  = datetime.now().isoformat()
     for uni in UNIVERSITIES:
         for spot in SPOTS:
-            c.execute('''INSERT OR IGNORE INTO parking_spots
-                (spot_id, university, status, battery, temperature, confidence, updated_at, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
-                (spot, uni, "free",
-                 random.randint(60, 100),
-                 round(random.uniform(18, 25), 1),
-                 0.95,
-                 datetime.now().isoformat(),
-                 "system"))
+            insert_or_ignore_spot(
+                c, spot, uni, "free",
+                random.randint(60, 100),
+                round(random.uniform(18, 25), 1),
+                0.95, now_str, "system"
+            )
             inserted += c.rowcount
 
-    # ── Compte admin — créé une seule fois, jamais écrasé ───
-    # Vérifie si un admin existe déjà
-    c.execute("SELECT id, password_hash FROM users WHERE username = 'admin'")
+    # Compte admin
+    c.execute(f"SELECT id, password_hash FROM users WHERE username = {ph}", ("admin",))
     existing_admin = c.fetchone()
 
     if not existing_admin:
-        # Premier lancement : crée l'admin avec bcrypt
         admin_password = os.environ.get("ADMIN_PASSWORD", "fastpark123")
-        admin_hash = hash_password(admin_password)
-        c.execute('''INSERT INTO users (username, email, password_hash, university, role)
-            VALUES (?, ?, ?, ?, ?)''',
-            ("admin", "admin@fastpark.ma", admin_hash, "all", "admin"))
-        logger.info("Compte admin créé (bcrypt). Changez le mot de passe via ADMIN_PASSWORD.")
+        admin_hash     = hash_password(admin_password)
+        c.execute(
+            f"INSERT INTO users (username, email, password_hash, university, role) VALUES ({ph},{ph},{ph},{ph},{ph})",
+            ("admin", "admin@fastpark.ma", admin_hash, "all", "admin")
+        )
+        logger.info("Compte admin créé (bcrypt).")
     else:
-        # Admin existant : migrer SHA-256 → bcrypt si nécessaire
-        stored = existing_admin[1]
-        if not stored.startswith("$2b$") and not stored.startswith("$2a$"):
-            # Hash SHA-256 détecté → migration silencieuse vers bcrypt
-            # On ne connaît pas le mdp en clair, on le migrera à la prochaine connexion
-            logger.info("Admin existant en SHA-256 : sera migré vers bcrypt à la prochaine connexion.")
+        stored = existing_admin[1] if not USE_POSTGRES else existing_admin["password_hash"] if hasattr(existing_admin, "keys") else existing_admin[1]
+        if not str(stored).startswith("$2b$") and not str(stored).startswith("$2a$"):
+            logger.info("Admin existant en SHA-256 : sera migré à la prochaine connexion.")
 
     conn.commit()
     conn.close()
 
     total_spots = len(UNIVERSITIES) * len(SPOTS)
-    logger.info(
-        f"DB prête : {len(UNIVERSITIES)} univ × {len(SPOTS)} places = {total_spots} capteurs "
-        f"({inserted} nouvelles places ajoutées)"
-    )
+    logger.info(f"DB prête : {len(UNIVERSITIES)} univ × {len(SPOTS)} places = {total_spots} ({inserted} nouvelles)")
 
 # ─────────────────────────────────────────────────────────────
 # Sauvegarde MQTT → DB
 # ─────────────────────────────────────────────────────────────
 def save_to_db(data):
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c    = conn.cursor()
-
         spot_id     = data.get('spot_id')
         uni         = data.get('university')
         status      = data.get('status')
@@ -293,25 +255,27 @@ def save_to_db(data):
         timestamp   = data.get('timestamp', datetime.now().isoformat())
 
         if not spot_id or not uni or not status:
-            conn.close()
             return
 
-        # Ne pas écraser une place réservée avec "free"
-        c.execute("SELECT status FROM parking_spots WHERE spot_id=? AND university=?", (spot_id, uni))
+        conn = get_conn()
+        c    = conn.cursor()
+
+        c.execute(f"SELECT status FROM parking_spots WHERE spot_id={ph} AND university={ph}", (spot_id, uni))
         current = c.fetchone()
-        if current and current[0] == 'reserved' and status == 'free':
+        current_status = current[0] if current else None
+
+        if current_status == 'reserved' and status == 'free':
             conn.close()
             return
 
-        c.execute('''UPDATE parking_spots
-            SET status=?, battery=?, temperature=?, confidence=?, updated_at=?, source=?
-            WHERE spot_id=? AND university=?''',
+        c.execute(f"""UPDATE parking_spots
+            SET status={ph}, battery={ph}, temperature={ph}, confidence={ph}, updated_at={ph}, source={ph}
+            WHERE spot_id={ph} AND university={ph}""",
             (status, battery, temperature, confidence, timestamp, source, spot_id, uni))
 
-        # Historique si changement de statut
-        if current and current[0] != status and status != 'reserved':
-            c.execute('''INSERT INTO parking_history (spot_id, university, status, changed_at)
-                         VALUES (?, ?, ?, ?)''', (spot_id, uni, status, timestamp))
+        if current_status and current_status != status and status != 'reserved':
+            c.execute(f"INSERT INTO parking_history (spot_id, university, status, changed_at) VALUES ({ph},{ph},{ph},{ph})",
+                      (spot_id, uni, status, timestamp))
 
         conn.commit()
         conn.close()
@@ -347,19 +311,14 @@ def on_message(client, userdata, msg):
     try:
         payload = msg.payload.decode('utf-8')
         data    = json.loads(payload)
-
         if time.time() - DEMARRAGE_TIME < 5 and data.get('status') == 'occupied':
             return
-
         if 'spot_id' not in data or 'university' not in data or 'status' not in data:
             logger.warning(f"Message MQTT ignoré (champs manquants) sur {msg.topic}")
             return
-
         if 'timestamp' not in data:
             data['timestamp'] = datetime.now().isoformat()
-
         save_to_db(data)
-
     except json.JSONDecodeError:
         pass
     except Exception as e:
@@ -394,22 +353,51 @@ def clean_expired_loop():
     while True:
         time.sleep(30)
         try:
-            conn = sqlite3.connect(DB_PATH)
+            conn = get_conn()
             c    = conn.cursor()
-            c.execute('''SELECT spot_id, university FROM reservations
-                         WHERE status='active' AND expires_at <= datetime('now')''')
+            now  = datetime.now().isoformat()
+            c.execute(f"SELECT spot_id, university FROM reservations WHERE status='active' AND expires_at <= {ph}", (now,))
             expired = c.fetchall()
-            for spot_id, university in expired:
-                c.execute('''UPDATE parking_spots SET status='free', updated_at=?
-                             WHERE spot_id=? AND university=?''',
+            for row in expired:
+                spot_id    = row[0]
+                university = row[1]
+                c.execute(f"UPDATE parking_spots SET status='free', updated_at={ph} WHERE spot_id={ph} AND university={ph}",
                           (datetime.now().isoformat(), spot_id, university))
                 logger.info(f"Expiration: {spot_id} - {university[:20]}... libérée")
-            c.execute('''UPDATE reservations SET status='expired'
-                         WHERE status='active' AND expires_at <= datetime('now')''')
+            c.execute(f"UPDATE reservations SET status='expired' WHERE status='active' AND expires_at <= {ph}", (now,))
             conn.commit()
             conn.close()
         except Exception as e:
             logger.error(f"Erreur nettoyage: {e}")
+
+# ─────────────────────────────────────────────────────────────
+# Démarrage des threads arrière-plan (compatible gunicorn + python app.py)
+# ─────────────────────────────────────────────────────────────
+_background_threads_started = False
+_threads_lock = threading.Lock()
+
+def start_background_threads():
+    """
+    Lance les threads démon une seule fois par process.
+    Appelé au 1er request entrant — compatible avec gunicorn multi-workers
+    (chaque worker est un process isolé, les threads démarrent dans chacun).
+    """
+    global _background_threads_started
+    with _threads_lock:
+        if _background_threads_started:
+            return
+        _background_threads_started = True
+
+    threading.Thread(target=start_mqtt_bridge,  daemon=True, name="mqtt-bridge").start()
+    threading.Thread(target=clean_expired_loop, daemon=True, name="clean-expired").start()
+    threading.Thread(target=flush_mqtt_buffer,  daemon=True, name="mqtt-flush").start()
+    logger.info("Threads arrière-plan démarrés (mqtt, clean_expired, flush)")
+
+@app.before_request
+def ensure_background_threads():
+    """Hook Flask — déclenche le démarrage des threads au 1er request."""
+    if not app.config.get('TESTING'):
+        start_background_threads()
 
 # ─────────────────────────────────────────────────────────────
 # Routes HTML
@@ -455,18 +443,18 @@ def checkin_page():
 # ─────────────────────────────────────────────────────────────
 @app.route('/api/login', methods=['POST'])
 @limiter.limit("5 per minute")
+@csrf_required
 def api_login():
     data     = request.get_json() or {}
     username = data.get('username', '').strip()
     password = data.get('password', '')
 
-    # Validation basique
     if not username or not password:
         return jsonify({"success": False, "message": "Identifiants manquants"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c    = conn.cursor()
-    c.execute('SELECT id, username, university, role, password_hash FROM users WHERE username=?', (username,))
+    c.execute(f"SELECT id, username, university, role, password_hash FROM users WHERE username={ph}", (username,))
     user = c.fetchone()
 
     if not user or not check_password(password, user[4]):
@@ -474,11 +462,10 @@ def api_login():
         logger.warning(f"Échec connexion: {username}")
         return jsonify({"success": False, "message": "Identifiants incorrects"}), 401
 
-    # Migration transparente SHA-256 → bcrypt à la connexion
     stored_hash = user[4]
-    if not stored_hash.startswith("$2b$") and not stored_hash.startswith("$2a$"):
+    if not str(stored_hash).startswith("$2b$") and not str(stored_hash).startswith("$2a$"):
         new_hash = hash_password(password)
-        c.execute('UPDATE users SET password_hash=? WHERE id=?', (new_hash, user[0]))
+        c.execute(f"UPDATE users SET password_hash={ph} WHERE id={ph}", (new_hash, user[0]))
         conn.commit()
         logger.info(f"Mot de passe de {username} migré SHA-256 → bcrypt")
 
@@ -498,6 +485,7 @@ def api_login():
 
 @app.route('/api/register', methods=['POST'])
 @limiter.limit("5 per minute")
+@csrf_required
 def api_register():
     import re
     data       = request.get_json() or {}
@@ -506,55 +494,46 @@ def api_register():
     password   = data.get('password', '')
     university = data.get('university', '').strip()
 
-    # ── Validation username ──────────────────────────────────
     if not username:
         return jsonify({"success": False, "message": "Nom d'utilisateur requis"}), 400
     if len(username) < 3 or len(username) > 30:
         return jsonify({"success": False, "message": "Le nom d'utilisateur doit faire entre 3 et 30 caractères"}), 400
     if not re.match(r'^[a-zA-Z0-9_-]+$', username):
-        return jsonify({"success": False, "message": "Le nom d'utilisateur ne peut contenir que des lettres, chiffres, _ et -"}), 400
-
-    # ── Validation email ─────────────────────────────────────
-    if not email:
-        return jsonify({"success": False, "message": "Email requis"}), 400
-    if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+        return jsonify({"success": False, "message": "Caractères non autorisés dans le nom d'utilisateur"}), 400
+    if not email or not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
         return jsonify({"success": False, "message": "Format d'email invalide"}), 400
     if len(email) > 100:
         return jsonify({"success": False, "message": "Email trop long"}), 400
-
-    # ── Validation mot de passe ──────────────────────────────
-    if not password:
-        return jsonify({"success": False, "message": "Mot de passe requis"}), 400
-    if len(password) < 8:
+    if not password or len(password) < 8:
         return jsonify({"success": False, "message": "Le mot de passe doit contenir au moins 8 caractères"}), 400
-
-    # ── Validation université ────────────────────────────────
     if not university or university not in UNIVERSITIES:
         return jsonify({"success": False, "message": "Université non valide"}), 400
 
-    # Hash bcrypt
     password_hash = hash_password(password)
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute('''INSERT INTO users (username, email, password_hash, university, role)
-                        VALUES (?, ?, ?, ?, 'user')''',
-                     (username, email, password_hash, university))
+        conn = get_conn()
+        conn.cursor().execute(
+            f"INSERT INTO users (username, email, password_hash, university, role) VALUES ({ph},{ph},{ph},{ph},'user')",
+            (username, email, password_hash, university)
+        )
         conn.commit()
         conn.close()
         logger.info(f"Nouvel utilisateur inscrit: {username}")
         return jsonify({"success": True, "message": "Inscription réussie"})
-    except sqlite3.IntegrityError:
-        return jsonify({"success": False, "message": "Nom d'utilisateur ou email déjà utilisé"}), 400
+    except Exception as e:
+        err = str(e).lower()
+        if "unique" in err or "duplicate" in err:
+            return jsonify({"success": False, "message": "Nom d'utilisateur ou email déjà utilisé"}), 400
+        return jsonify({"success": False, "message": "Erreur serveur"}), 500
 
 
-# Gestion propre des erreurs de rate limit
 @app.errorhandler(429)
 def ratelimit_handler(e):
-    return jsonify({
-        "success": False,
-        "message": "Trop de tentatives. Veuillez patienter une minute avant de réessayer."
-    }), 429
+    return jsonify({"success": False, "message": "Trop de tentatives. Veuillez patienter une minute."}), 429
+
+
 @app.route('/api/logout', methods=['POST'])
+@csrf_required
 def api_logout():
     logger.info(f"Déconnexion: {session.get('username')}")
     session.clear()
@@ -575,7 +554,7 @@ def check_auth():
 @app.route('/api/health', methods=['GET'])
 def health_check():
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         c    = conn.cursor()
         c.execute("SELECT MAX(updated_at) FROM parking_spots")
         last_update_str = c.fetchone()[0]
@@ -586,18 +565,19 @@ def health_check():
         data_fresh = False
         if last_update_str:
             try:
-                lu = datetime.fromisoformat(last_update_str)
+                lu = datetime.fromisoformat(str(last_update_str))
                 data_fresh = (datetime.now() - lu).seconds < 300
             except:
                 pass
 
         return jsonify({
             "status":           "healthy" if data_fresh else "warning",
-            "last_data_update": last_update_str,
+            "last_data_update": str(last_update_str),
             "data_fresh":       data_fresh,
             "mqtt_broker":      "connected" if check_mqtt_broker() else "disconnected",
             "mqtt_host":        MQTT_BROKER,
             "total_spots":      total_spots,
+            "database":         "postgresql" if USE_POSTGRES else "sqlite",
             "timestamp":        datetime.now().isoformat()
         })
     except Exception as e:
@@ -608,56 +588,76 @@ def health_check():
 # ─────────────────────────────────────────────────────────────
 @app.route('/api/reserve', methods=['POST'])
 @login_required
+@csrf_required
 def reserve_spot():
-    data = request.get_json() or {}
-    spot_id = data.get('spot_id')
+    data       = request.get_json() or {}
+    spot_id    = data.get('spot_id')
     university = data.get('university')
-    user_id = session.get('user_id')
-    username = session.get('username')
+    user_id    = session.get('user_id')
+    username   = session.get('username')
 
     if not spot_id or not university:
         return jsonify({"success": False, "message": "Données manquantes"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    conn = get_conn()
+    c    = conn.cursor()
+    now  = datetime.now().isoformat()
 
-    c.execute('''SELECT id, spot_id, expires_at FROM reservations
-                 WHERE user_id = ? AND status = 'active' AND expires_at > datetime('now')''', (user_id,))
-    existing = c.fetchone()
-    if existing:
+    try:
+        # ── Vérification réservation existante de l'utilisateur ──
+        c.execute(f"SELECT id, spot_id, expires_at FROM reservations WHERE user_id={ph} AND status='active' AND expires_at > {ph}", (user_id, now))
+        existing = c.fetchone()
+        if existing:
+            conn.close()
+            return jsonify({"success": False, "message": f"Vous avez déjà une réservation active pour la place {existing[1]}"}), 400
+
+        # ── Verrouillage atomique de la place (SELECT FOR UPDATE en PG, transaction en SQLite) ──
+        # En SQLite, la transaction BEGIN IMMEDIATE pose un verrou exclusif sur la DB
+        # En PostgreSQL, SELECT FOR UPDATE verrouille la ligne
+        if USE_POSTGRES:
+            c.execute(f"SELECT status FROM parking_spots WHERE spot_id={ph} AND university={ph} FOR UPDATE", (spot_id, university))
+        else:
+            c.execute("BEGIN IMMEDIATE") if not conn.in_transaction else None  # SQLite : verrou au niveau fichier
+            c.execute(f"SELECT status FROM parking_spots WHERE spot_id={ph} AND university={ph}", (spot_id, university))
+
+        current = c.fetchone()
+        if not current:
+            conn.close()
+            return jsonify({"success": False, "message": "Place introuvable"}), 404
+
+        current_status = current[0]
+        if current_status in ('occupied', 'reserved'):
+            conn.close()
+            return jsonify({"success": False, "message": f"Cette place est déjà {current_status}"}), 400
+
+        # ── Vérification doublon réservation active sur cette place ──
+        c.execute(f"SELECT id FROM reservations WHERE spot_id={ph} AND university={ph} AND status='active' AND expires_at > {ph}", (spot_id, university, now))
+        if c.fetchone():
+            conn.close()
+            return jsonify({"success": False, "message": "Cette place est déjà réservée"}), 400
+
+        expires_at_str = (datetime.now() + timedelta(minutes=10)).isoformat()
+
+        c.execute(
+            f"INSERT INTO reservations (spot_id, university, user_id, username, reserved_at, expires_at, status) VALUES ({ph},{ph},{ph},{ph},{ph},{ph},'active')",
+            (spot_id, university, user_id, username, now, expires_at_str)
+        )
+        reservation_id = lastrowid(c)
+
+        qr_token     = secrets.token_urlsafe(32)
+        qr_code_data = f"fastpark://checkin?res={reservation_id}&token={qr_token}"
+        c.execute(f"INSERT INTO qr_codes (reservation_id, code) VALUES ({ph},{ph})", (reservation_id, qr_token))
+
+        c.execute(f"UPDATE parking_spots SET status='reserved', updated_at={ph} WHERE spot_id={ph} AND university={ph}",
+                  (now, spot_id, university))
+        conn.commit()
+
+    except Exception as e:
+        conn.rollback()
         conn.close()
-        return jsonify({"success": False,
-                        "message": f"Vous avez déjà une réservation active pour la place {existing[1]}"}), 400
+        logger.error(f"Erreur réservation: {e}")
+        return jsonify({"success": False, "message": "Erreur serveur lors de la réservation"}), 500
 
-    c.execute('''SELECT id FROM reservations
-                 WHERE spot_id = ? AND university = ? AND status = 'active' AND expires_at > datetime('now')''',
-              (spot_id, university))
-    if c.fetchone():
-        conn.close()
-        return jsonify({"success": False, "message": "Cette place est déjà réservée"}), 400
-
-    c.execute("SELECT status FROM parking_spots WHERE spot_id = ? AND university = ?", (spot_id, university))
-    current = c.fetchone()
-    if current and current[0] == 'occupied':
-        conn.close()
-        return jsonify({"success": False, "message": "Cette place est déjà occupée"}), 400
-
-    expires_dt = datetime.now() + timedelta(minutes=10)
-    expires_at_str = expires_dt.isoformat()
-
-    c.execute('''INSERT INTO reservations (spot_id, university, user_id, username, reserved_at, expires_at, status)
-                 VALUES (?, ?, ?, ?, ?, ?, 'active')''',
-              (spot_id, university, user_id, username, datetime.now().isoformat(), expires_at_str))
-    reservation_id = c.lastrowid
-
-    qr_token = secrets.token_urlsafe(32)
-    qr_code_data = f"fastpark://checkin?res={reservation_id}&token={qr_token}"
-    c.execute('INSERT INTO qr_codes (reservation_id, code) VALUES (?, ?)', (reservation_id, qr_token))
-
-    c.execute('''UPDATE parking_spots SET status = 'reserved', updated_at = ?
-                 WHERE spot_id = ? AND university = ?''',
-              (datetime.now().isoformat(), spot_id, university))
-    conn.commit()
     conn.close()
 
     qr = qrcode.QRCode(box_size=8, border=2)
@@ -677,39 +677,39 @@ def reserve_spot():
         "reservation_id": reservation_id
     })
 
+
 @app.route('/api/cancel_reservation', methods=['POST'])
 @login_required
+@csrf_required
 def cancel_reservation():
     data       = request.get_json() or {}
     spot_id    = data.get('spot_id')
     university = data.get('university')
     user_id    = session.get('user_id')
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c    = conn.cursor()
-    c.execute('''UPDATE reservations SET status='cancelled'
-                 WHERE spot_id=? AND university=? AND user_id=? AND status='active' ''',
+    c.execute(f"UPDATE reservations SET status='cancelled' WHERE spot_id={ph} AND university={ph} AND user_id={ph} AND status='active'",
               (spot_id, university, user_id))
-    c.execute('''UPDATE parking_spots SET status='free', updated_at=?
-                 WHERE spot_id=? AND university=?''',
+    c.execute(f"UPDATE parking_spots SET status='free', updated_at={ph} WHERE spot_id={ph} AND university={ph}",
               (datetime.now().isoformat(), spot_id, university))
     conn.commit()
     conn.close()
     return jsonify({"success": True, "message": "Réservation annulée"})
 
+
 @app.route('/api/my_reservation', methods=['GET'])
 @login_required
 def my_reservation():
     user_id = session.get('user_id')
-    conn    = sqlite3.connect(DB_PATH)
+    now     = datetime.now().isoformat()
+    conn    = get_conn()
     c       = conn.cursor()
-    c.execute('''SELECT spot_id, university, reserved_at, expires_at FROM reservations
-                 WHERE user_id=? AND status='active' AND expires_at > datetime('now')''', (user_id,))
+    c.execute(f"SELECT spot_id, university, reserved_at, expires_at FROM reservations WHERE user_id={ph} AND status='active' AND expires_at > {ph}", (user_id, now))
     r = c.fetchone()
     conn.close()
     if r:
-        return jsonify({"has_reservation": True, "spot_id": r[0], "university": r[1],
-                        "reserved_at": r[2], "expires_at": r[3]})
+        return jsonify({"has_reservation": True, "spot_id": r[0], "university": r[1], "reserved_at": r[2], "expires_at": r[3]})
     return jsonify({"has_reservation": False})
 
 # ─────────────────────────────────────────────────────────────
@@ -721,12 +721,12 @@ def get_spots():
     user_uni = session.get('university')
     is_admin = session.get('role') == 'admin'
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c    = conn.cursor()
     if is_admin:
-        c.execute('SELECT spot_id, university, status, battery, temperature, confidence, updated_at, source FROM parking_spots ORDER BY university, spot_id')
+        c.execute("SELECT spot_id, university, status, battery, temperature, confidence, updated_at, source FROM parking_spots ORDER BY university, spot_id")
     else:
-        c.execute('SELECT spot_id, university, status, battery, temperature, confidence, updated_at, source FROM parking_spots WHERE university=? ORDER BY spot_id', (user_uni,))
+        c.execute(f"SELECT spot_id, university, status, battery, temperature, confidence, updated_at, source FROM parking_spots WHERE university={ph} ORDER BY spot_id", (user_uni,))
     rows = c.fetchall()
     conn.close()
 
@@ -736,13 +736,14 @@ def get_spots():
         "updated_at": r[6], "source": r[7]
     } for r in rows])
 
+
 @app.route('/api/stats', methods=['GET'])
 @login_required
 def get_stats():
     user_uni = session.get('university')
     is_admin = session.get('role') == 'admin'
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c    = conn.cursor()
     if is_admin:
         c.execute("SELECT COUNT(*) FROM parking_spots")
@@ -752,11 +753,11 @@ def get_stats():
         c.execute("SELECT AVG(battery) FROM parking_spots WHERE battery > 0")
         avg_battery = c.fetchone()[0] or 0
     else:
-        c.execute("SELECT COUNT(*) FROM parking_spots WHERE university=?", (user_uni,))
+        c.execute(f"SELECT COUNT(*) FROM parking_spots WHERE university={ph}", (user_uni,))
         total = c.fetchone()[0]
-        c.execute("SELECT status, COUNT(*) FROM parking_spots WHERE university=? GROUP BY status", (user_uni,))
+        c.execute(f"SELECT status, COUNT(*) FROM parking_spots WHERE university={ph} GROUP BY status", (user_uni,))
         sc = {r[0]: r[1] for r in c.fetchall()}
-        c.execute("SELECT AVG(battery) FROM parking_spots WHERE university=? AND battery > 0", (user_uni,))
+        c.execute(f"SELECT AVG(battery) FROM parking_spots WHERE university={ph} AND battery > 0", (user_uni,))
         avg_battery = c.fetchone()[0] or 0
     conn.close()
 
@@ -766,13 +767,10 @@ def get_stats():
     occ_rate = round(((occupied + reserved) / total) * 100, 1) if total else 0
 
     return jsonify({
-        "total_spots":         total,
-        "occupied":            occupied,
-        "free":                free,
-        "reserved":            reserved,
+        "total_spots": total, "occupied": occupied, "free": free, "reserved": reserved,
         "avg_battery_percent": round(avg_battery, 1),
-        "occupancy_rate":      occ_rate,
-        "last_update":         datetime.now().isoformat()
+        "occupancy_rate": occ_rate,
+        "last_update": datetime.now().isoformat()
     })
 
 # ─────────────────────────────────────────────────────────────
@@ -784,12 +782,12 @@ def export_csv():
     user_uni = session.get('university')
     is_admin = session.get('role') == 'admin'
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c    = conn.cursor()
     if is_admin:
         c.execute("SELECT spot_id, university, status, battery, temperature, updated_at FROM parking_spots")
     else:
-        c.execute("SELECT spot_id, university, status, battery, temperature, updated_at FROM parking_spots WHERE university=?", (user_uni,))
+        c.execute(f"SELECT spot_id, university, status, battery, temperature, updated_at FROM parking_spots WHERE university={ph}", (user_uni,))
     rows = c.fetchall()
     conn.close()
 
@@ -803,40 +801,37 @@ def export_csv():
                     headers={'Content-Disposition': 'attachment; filename=parking_export.csv'})
 
 # ─────────────────────────────────────────────────────────────
-# API MCP : Chat, Rapport, Prédiction
-# ─────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────
-# API coordonnées GPS des universités (pour Google Maps)
+# API GPS
 # ─────────────────────────────────────────────────────────────
 @app.route('/api/university_gps', methods=['GET'])
 def university_gps():
-    """Retourne les coordonnées GPS de toutes les universités."""
     return jsonify(UNIVERSITY_GPS)
 
 # ─────────────────────────────────────────────────────────────
-# API historique check-ins (Bug 3 fix — plus de localStorage)
+# API Check-in history
 # ─────────────────────────────────────────────────────────────
 @app.route('/api/checkin_history', methods=['GET'])
 @login_required
 def get_checkin_history():
-    """Retourne les 20 derniers check-ins de la journée pour l'agent."""
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c    = conn.cursor()
-    c.execute('''SELECT spot_id, university, username, validated_by, validated_at
-                 FROM checkin_log
-                 WHERE date(validated_at) = date('now')
-                 ORDER BY validated_at DESC
-                 LIMIT 20''')
+    if USE_POSTGRES:
+        c.execute("""SELECT spot_id, university, username, validated_by, validated_at
+                     FROM checkin_log
+                     WHERE validated_at::date = CURRENT_DATE
+                     ORDER BY validated_at DESC LIMIT 20""")
+    else:
+        c.execute("""SELECT spot_id, university, username, validated_by, validated_at
+                     FROM checkin_log
+                     WHERE date(validated_at) = date('now')
+                     ORDER BY validated_at DESC LIMIT 20""")
     rows = c.fetchall()
     conn.close()
-    return jsonify([{
-        "spot_id":      r[0],
-        "university":   r[1],
-        "username":     r[2],
-        "validated_by": r[3],
-        "time":         r[4],
-    } for r in rows])
+    return jsonify([{"spot_id": r[0], "university": r[1], "username": r[2], "validated_by": r[3], "time": r[4]} for r in rows])
 
+# ─────────────────────────────────────────────────────────────
+# API Chat IA
+# ─────────────────────────────────────────────────────────────
 @app.route('/api/chat', methods=['POST'])
 @login_required
 def chat():
@@ -849,14 +844,11 @@ def chat():
 
     response_text = mcp.ask(question, university)
 
-    # Sauvegarder l'échange en DB (Bug 3 fix — plus de localStorage)
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_conn()
         c    = conn.cursor()
-        c.execute("INSERT INTO chat_history (user_id, role, message) VALUES (?, 'user', ?)",
-                  (user_id, question[:1000]))
-        c.execute("INSERT INTO chat_history (user_id, role, message) VALUES (?, 'assistant', ?)",
-                  (user_id, response_text[:2000]))
+        c.execute(f"INSERT INTO chat_history (user_id, role, message) VALUES ({ph},'user',{ph})", (user_id, question[:1000]))
+        c.execute(f"INSERT INTO chat_history (user_id, role, message) VALUES ({ph},'assistant',{ph})", (user_id, response_text[:2000]))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -864,27 +856,25 @@ def chat():
 
     return jsonify({"response": response_text})
 
+
 @app.route('/api/chat_history', methods=['GET'])
 @login_required
 def get_chat_history():
-    """Retourne les 20 derniers messages du chat pour l'utilisateur courant."""
     user_id = session.get('user_id')
-    conn    = sqlite3.connect(DB_PATH)
+    conn    = get_conn()
     c       = conn.cursor()
-    c.execute('''SELECT role, message, created_at
-                 FROM chat_history
-                 WHERE user_id = ?
-                 ORDER BY created_at DESC
-                 LIMIT 20''', (user_id,))
+    c.execute(f"SELECT role, message, created_at FROM chat_history WHERE user_id={ph} ORDER BY created_at DESC LIMIT 20", (user_id,))
     rows = list(reversed(c.fetchall()))
     conn.close()
     return jsonify([{"role": r[0], "message": r[1], "time": r[2]} for r in rows])
+
 
 @app.route('/api/report', methods=['GET'])
 @login_required
 def generate_report():
     university = session.get('university') if session.get('role') != 'admin' else 'all'
     return jsonify({"report": mcp.generate_report(university)})
+
 
 @app.route('/api/predict', methods=['GET'])
 @login_required
@@ -898,6 +888,7 @@ def predict():
 # ─────────────────────────────────────────────────────────────
 @app.route('/api/validate_checkin', methods=['POST'])
 @login_required
+@csrf_required
 def validate_checkin():
     data           = request.get_json() or {}
     qr_token       = data.get('token')
@@ -905,66 +896,55 @@ def validate_checkin():
     user_id        = session.get('user_id')
     username       = session.get('username')
     is_admin       = session.get('role') == 'admin'
+    now            = datetime.now().isoformat()
 
     if not reservation_id:
         return jsonify({"success": False, "message": "ID de réservation manquant"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c    = conn.cursor()
 
     if qr_token and qr_token != str(reservation_id):
-        c.execute('''SELECT id FROM qr_codes
-                     WHERE reservation_id = ? AND code = ? AND used = 0''',
-                  (reservation_id, qr_token))
+        c.execute(f"SELECT id FROM qr_codes WHERE reservation_id={ph} AND code={ph} AND used=0", (reservation_id, qr_token))
         if not c.fetchone():
             conn.close()
             return jsonify({"success": False, "message": "QR code invalide ou déjà utilisé"}), 400
 
     if is_admin:
-        c.execute('''SELECT spot_id, university, expires_at, status FROM reservations
-                     WHERE id = ? AND status = 'active' AND expires_at > datetime('now')''', (reservation_id,))
+        c.execute(f"SELECT spot_id, university, expires_at, status FROM reservations WHERE id={ph} AND status='active' AND expires_at > {ph}", (reservation_id, now))
     else:
-        c.execute('''SELECT spot_id, university, expires_at, status FROM reservations
-                     WHERE id = ? AND user_id = ? AND status = 'active' AND expires_at > datetime('now')''',
-                  (reservation_id, user_id))
+        c.execute(f"SELECT spot_id, university, expires_at, status FROM reservations WHERE id={ph} AND user_id={ph} AND status='active' AND expires_at > {ph}", (reservation_id, user_id, now))
 
     reservation = c.fetchone()
     if not reservation:
         conn.close()
         return jsonify({"success": False, "message": "Réservation invalide ou expirée"}), 400
 
-    spot_id, university, expires_at, status = reservation
+    spot_id, university, expires_at, status = reservation[0], reservation[1], reservation[2], reservation[3]
 
     if not qr_token or qr_token == str(reservation_id):
-        c.execute('INSERT OR IGNORE INTO qr_codes (reservation_id, code, used) VALUES (?, ?, 0)',
-                  (reservation_id, str(reservation_id)))
+        insert_or_ignore_qr(c, reservation_id, str(reservation_id))
         conn.commit()
 
-    c.execute("UPDATE reservations SET status = 'checked_in' WHERE id = ?", (reservation_id,))
-    c.execute('''UPDATE parking_spots SET status = 'occupied', updated_at = ?
-                 WHERE spot_id = ? AND university = ?''',
-              (datetime.now().isoformat(), spot_id, university))
-    c.execute('''UPDATE qr_codes SET used = 1, used_at = ?
-                 WHERE reservation_id = ? AND used = 0''',
-              (datetime.now().isoformat(), reservation_id))
+    c.execute(f"UPDATE reservations SET status='checked_in' WHERE id={ph}", (reservation_id,))
+    c.execute(f"UPDATE parking_spots SET status='occupied', updated_at={ph} WHERE spot_id={ph} AND university={ph}",
+              (now, spot_id, university))
+    c.execute(f"UPDATE qr_codes SET used=1, used_at={ph} WHERE reservation_id={ph} AND used=0",
+              (now, reservation_id))
 
-    # Récupérer le nom du client depuis la table reservations
-    c.execute('SELECT username FROM reservations WHERE id=?', (reservation_id,))
+    c.execute(f"SELECT username FROM reservations WHERE id={ph}", (reservation_id,))
     res_row = c.fetchone()
     client_username = res_row[0] if res_row else username
 
-    # Enregistrer le check-in en DB (Bug 3 fix — plus de localStorage)
     validator = session.get('username', 'agent')
-    c.execute('''INSERT INTO checkin_log (reservation_id, spot_id, university, username, validated_by)
-                 VALUES (?, ?, ?, ?, ?)''',
+    c.execute(f"INSERT INTO checkin_log (reservation_id, spot_id, university, username, validated_by) VALUES ({ph},{ph},{ph},{ph},{ph})",
               (reservation_id, spot_id, university, client_username, validator))
 
     conn.commit()
     conn.close()
     logger.info(f"Check-in validé: {username} → place {spot_id}")
-    return jsonify({"success": True,
-                    "message": f"Bienvenue ! Place {spot_id} est maintenant occupée",
-                    "spot_id": spot_id})
+    return jsonify({"success": True, "message": f"Bienvenue ! Place {spot_id} est maintenant occupée", "spot_id": spot_id})
+
 
 @app.route('/api/reservation_details', methods=['GET'])
 @login_required
@@ -973,31 +953,32 @@ def reservation_details():
     if not res_id:
         return jsonify({"error": "ID requis"}), 400
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_conn()
     c    = conn.cursor()
-    c.execute('''SELECT r.spot_id, r.university, u.username, u.university
-                 FROM reservations r JOIN users u ON r.user_id = u.id
-                 WHERE r.id = ?''', (res_id,))
+    c.execute(f"""SELECT r.spot_id, r.university, u.username, u.university
+                  FROM reservations r JOIN users u ON r.user_id = u.id
+                  WHERE r.id = {ph}""", (res_id,))
     result = c.fetchone()
     conn.close()
 
     if result:
-        return jsonify({"spot_id": result[0], "university": result[1],
-                        "username": result[2], "user_university": result[3]})
+        return jsonify({"spot_id": result[0], "university": result[1], "username": result[2], "user_university": result[3]})
     return jsonify({"error": "Réservation non trouvée"}), 404
+
+# ─────────────────────────────────────────────────────────────
+# Initialisation DB au démarrage (python app.py ET gunicorn)
+# ─────────────────────────────────────────────────────────────
+# Appelé une fois à l'import du module, avant le 1er request.
+# Le guard permet d'éviter une double exécution en mode test.
+if not app.config.get('TESTING'):
+    init_db()
 
 # ─────────────────────────────────────────────────────────────
 # Lancement
 # ─────────────────────────────────────────────────────────────
 if __name__ == '__main__':
-    init_db()
+    start_background_threads()
 
-    # Threads
-    threading.Thread(target=start_mqtt_bridge,  daemon=True).start()
-    threading.Thread(target=clean_expired_loop, daemon=True).start()
-    threading.Thread(target=flush_mqtt_buffer,  daemon=True).start()
-
-    # Port dynamique (Cloud) ou 5000 par défaut (local)
     port = int(os.environ.get("PORT", 5000))
 
     print("\n" + "═" * 55)
@@ -1005,11 +986,9 @@ if __name__ == '__main__':
     print("═" * 55)
     print(f"  Dashboard  →  http://localhost:{port}")
     print(f"  MQTT       →  {MQTT_BROKER}:{MQTT_PORT}")
+    print(f"  Base       →  {'PostgreSQL ☁️' if USE_POSTGRES else 'SQLite 💾'}")
     print(f"  Inscription→  http://localhost:{port}/register")
     print(f"  Monitoring →  http://localhost:{port}/health")
-    print("═" * 55)
-    print("  Mot de passe admin : voir variable ADMIN_PASSWORD")
-    print("  (par défaut : fastpark123 — à changer en production)")
     print("═" * 55)
 
     cert_file = os.path.join(BASE_DIR, 'server.crt')

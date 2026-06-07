@@ -1,10 +1,10 @@
 """
-FastPark MCP — Assistant IA + contexte parking
+FastPark MCP -- Assistant IA + contexte parking
 - Utilise l'API GROQ (100% gratuite, sans carte bancaire)
-  Modèle : llama-3.3-70b-versatile
+  Modele : llama-3.3-70b-versatile
   Inscription : https://console.groq.com
-- Fallback local intelligent si la clé est absente
-- db_path injecté depuis app.py (chemin absolu)
+- Fallback local intelligent si la cle est absente
+- db_path injecte depuis app.py (chemin absolu)
 - Chargement automatique du .env
 """
 
@@ -40,8 +40,6 @@ _load_dotenv()
 
 
 class FastParkMCP:
-    # ── Groq API — 100% gratuit, pas de carte bancaire ───────
-    # Inscription : https://console.groq.com → API Keys → Create
     GROQ_MODEL = "llama-3.3-70b-versatile"
     GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -50,17 +48,29 @@ class FastParkMCP:
 
     @property
     def api_key(self) -> str:
-        """Relu à chaque appel — prend en compte le .env chargé après l'import."""
         return os.environ.get("GROQ_API_KEY", "").strip()
 
     # ─────────────────────────────────────────────────────────
     # Helpers DB
     # ─────────────────────────────────────────────────────────
     def _query(self, sql: str, params=()):
-        with sqlite3.connect(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute(sql, params)
-            return c.fetchall()
+        from db import USE_POSTGRES
+        if USE_POSTGRES:
+            import psycopg2
+            DATABASE_URL = os.environ.get("DATABASE_URL", "")
+            if DATABASE_URL.startswith("postgres://"):
+                DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+            # Convertir les ? en %s pour psycopg2
+            sql_pg = sql.replace("?", "%s")
+            with psycopg2.connect(DATABASE_URL) as conn:
+                c = conn.cursor()
+                c.execute(sql_pg, params)
+                return c.fetchall()
+        else:
+            with sqlite3.connect(self.db_path) as conn:
+                c = conn.cursor()
+                c.execute(sql, params)
+                return c.fetchall()
 
     def get_all_universities(self):
         rows = self._query("SELECT DISTINCT university FROM parking_spots ORDER BY university")
@@ -118,7 +128,7 @@ class FastParkMCP:
         ]
 
     # ─────────────────────────────────────────────────────────
-    # System prompt avec contexte temps réel
+    # System prompt avec contexte temps reel
     # ─────────────────────────────────────────────────────────
     def _build_system_prompt(self, university=None) -> str:
         ctx      = self.get_parking_context(university)
@@ -137,45 +147,37 @@ class FastParkMCP:
         )
         alert_lines = ""
         if critical:
-            alert_lines = "\n⚠️ ALERTES BATTERIE CRITIQUE (<20%) :\n" + "\n".join(
+            alert_lines = "\nALERTES BATTERIE CRITIQUE (<20%) :\n" + "\n".join(
                 f"  - {u['university']} : {u['avg_battery']}%" for u in critical
             )
 
-        scope = f"pour {university}" if university and university != "all" else "global (toutes universités)"
-        now   = datetime.now().strftime("%d/%m/%Y à %H:%M")
+        scope = f"pour {university}" if university and university != "all" else "global (toutes universites)"
+        now   = datetime.now().strftime("%d/%m/%Y a %H:%M")
 
-        return f"""Tu es l'assistant intelligent du système FastPark — gestion de parkings pour les universités de Casablanca, Maroc.
-
-=== DONNÉES TEMPS RÉEL ({now}) — {scope} ===
-
-📊 RÉSUMÉ GLOBAL :
-  Total : {ctx['total_spots']} places | Libres : {ctx['free_spots']} | Occupées : {ctx['occupied_spots']} | Réservées : {ctx['reserved_spots']}
-  Taux d'occupation : {ctx['occupancy_rate']}% | Batterie capteurs moyenne : {ctx['avg_battery']}%
-
-🏫 ÉTAT PAR UNIVERSITÉ :
-{uni_lines}
-
-🔝 TOP 3 LES PLUS CHARGÉES :
-{top3_lines}
-{alert_lines}
-
-=== TES RÈGLES ===
-1. Réponds TOUJOURS en français, de façon claire et avec des emojis.
-2. Utilise UNIQUEMENT les données ci-dessus. Ne les invente pas.
-3. Pour une université précise, fais une correspondance partielle sur le nom (ex: "EMSI" → "EMSI Casablanca").
-4. Si quelqu'un envoie un message vague ("c", "test", "ok"), réponds poliment que tu es disponible pour des questions sur le parking FastPark et donne 2-3 exemples concrets.
-5. Propose des alternatives si une université est pleine.
-6. Sois concis : maximum 5 lignes par réponse.
-"""
+        return (
+            "Tu es l'assistant intelligent du systeme FastPark - gestion de parkings "
+            "pour les universites de Casablanca, Maroc.\n\n"
+            f"=== DONNEES TEMPS REEL ({now}) - {scope} ===\n\n"
+            "RESUME GLOBAL :\n"
+            f"  Total : {ctx['total_spots']} places | Libres : {ctx['free_spots']} | "
+            f"Occupees : {ctx['occupied_spots']} | Reservees : {ctx['reserved_spots']}\n"
+            f"  Taux d'occupation : {ctx['occupancy_rate']}% | Batterie capteurs moyenne : {ctx['avg_battery']}%\n\n"
+            f"ETAT PAR UNIVERSITE :\n{uni_lines}\n\n"
+            f"TOP 3 LES PLUS CHARGEES :\n{top3_lines}\n"
+            f"{alert_lines}\n\n"
+            "=== TES REGLES ===\n"
+            "1. Reponds TOUJOURS en francais, de facon claire et avec des emojis.\n"
+            "2. Utilise UNIQUEMENT les donnees ci-dessus. Ne les invente pas.\n"
+            "3. Pour une universite precise, fais une correspondance partielle sur le nom.\n"
+            "4. Si quelqu'un envoie un message vague, reponds poliment avec des exemples.\n"
+            "5. Propose des alternatives si une universite est pleine.\n"
+            "6. Sois concis : maximum 5 lignes par reponse.\n"
+        )
 
     # ─────────────────────────────────────────────────────────
     # Appel Groq API (gratuit)
     # ─────────────────────────────────────────────────────────
-    def _call_llm(self, question: str, university=None) -> str | None:
-        """
-        Appelle l'API Groq (format OpenAI compatible).
-        Retourne None si clé absente — bascule sur le fallback local.
-        """
+    def _call_llm(self, question: str, university=None):
         key = self.api_key
         if not key:
             return None
@@ -209,13 +211,12 @@ class FastParkMCP:
             raise RuntimeError(f"Groq API error: {e}")
 
     # ─────────────────────────────────────────────────────────
-    # Fallback local intelligent (si pas de clé)
+    # Fallback local intelligent
     # ─────────────────────────────────────────────────────────
     def _ask_local(self, question: str, university=None) -> str:
         ctx = self.get_parking_context(university)
         q   = question.lower().strip()
 
-        # Cherche une université mentionnée dans la question
         unis      = self.get_all_universities()
         found_uni = None
         for uni in unis:
@@ -227,88 +228,73 @@ class FastParkMCP:
         if found_uni:
             uc = self.get_parking_context(found_uni)
             if any(w in q for w in ["libre", "disponible", "dispo", "place"]):
-                return (f"🏫 **{found_uni}**\n"
-                        f"✅ **{uc['free_spots']} places libres** sur {uc['total_spots']} "
+                return (f"Universite : {found_uni}\n"
+                        f"{uc['free_spots']} places libres sur {uc['total_spots']} "
                         f"(occupation {uc['occupancy_rate']}%)")
             elif any(w in q for w in ["taux", "occup", "plein", "charg"]):
-                return (f"📊 **{found_uni}**\n"
-                        f"Taux d'occupation : **{uc['occupancy_rate']}%** "
-                        f"({uc['occupied_spots']}/{uc['total_spots']} occupées)")
+                return (f"Universite : {found_uni}\n"
+                        f"Taux d'occupation : {uc['occupancy_rate']}% "
+                        f"({uc['occupied_spots']}/{uc['total_spots']} occupees)")
             elif "batterie" in q:
-                return f"🔋 **{found_uni}** — Batterie moyenne : **{uc['avg_battery']}%**"
+                return f"{found_uni} - Batterie moyenne : {uc['avg_battery']}%"
             elif "reserv" in q:
-                return f"🟠 **{found_uni}** — {uc['reserved_spots']} place(s) réservée(s)"
-            return (f"🏫 **{found_uni}**\n"
-                    f"✅ Libres : {uc['free_spots']} | 🔴 Occupées : {uc['occupied_spots']} | "
-                    f"🟠 Réservées : {uc['reserved_spots']} | 📈 Taux : {uc['occupancy_rate']}%")
+                return f"{found_uni} - {uc['reserved_spots']} place(s) reservee(s)"
+            return (f"{found_uni}\n"
+                    f"Libres : {uc['free_spots']} | Occupees : {uc['occupied_spots']} | "
+                    f"Reservees : {uc['reserved_spots']} | Taux : {uc['occupancy_rate']}%")
 
-        # Questions globales
-        if any(w in q for w in ["chaque", "toutes", "liste", "universite", "université", "par uni", "toutes les"]):
+        if any(w in q for w in ["chaque", "toutes", "liste", "universite", "par uni"]):
             summary = self.get_university_summary()
             lines   = "\n".join(
-                f"{'✅' if u['free'] > 0 else '🔴'} **{u['university'][:40]}** : "
-                f"{u['free']}/{u['total']} libres ({u['occupancy_rate']}%)"
+                f"{u['university'][:40]} : {u['free']}/{u['total']} libres ({u['occupancy_rate']}%)"
                 for u in summary
             )
-            return f"📊 **État de toutes les universités :**\n\n{lines}"
+            return f"Etat de toutes les universites :\n\n{lines}"
 
         if any(w in q for w in ["libre", "disponible", "dispo", "combien", "place"]):
-            return (f"🔍 **{ctx['free_spots']} places libres** sur {ctx['total_spots']}\n"
-                    f"📈 Taux d'occupation global : {ctx['occupancy_rate']}%")
+            return (f"{ctx['free_spots']} places libres sur {ctx['total_spots']}\n"
+                    f"Taux d'occupation global : {ctx['occupancy_rate']}%")
 
         if any(w in q for w in ["taux", "pourcentage", "occupation", "stat"]):
-            return (f"📈 **Taux d'occupation global : {ctx['occupancy_rate']}%**\n"
-                    f"🔴 Occupées : {ctx['occupied_spots']} | ✅ Libres : {ctx['free_spots']} | "
-                    f"🟠 Réservées : {ctx['reserved_spots']}")
+            return (f"Taux d'occupation global : {ctx['occupancy_rate']}%\n"
+                    f"Occupees : {ctx['occupied_spots']} | Libres : {ctx['free_spots']} | "
+                    f"Reservees : {ctx['reserved_spots']}")
 
         if "batterie" in q or "battery" in q or "capteur" in q:
-            return f"🔋 **Batterie moyenne des capteurs : {ctx['avg_battery']}%**"
+            return f"Batterie moyenne des capteurs : {ctx['avg_battery']}%"
 
         if "reserv" in q:
-            return f"🟠 **{ctx['reserved_spots']} places réservées** sur {ctx['total_spots']}"
+            return f"{ctx['reserved_spots']} places reservees sur {ctx['total_spots']}"
 
         if any(w in q for w in ["bonjour", "salut", "bonsoir", "hello", "hi", "salam", "bsr", "bjr"]):
-            return (f"👋 **Bonjour !** Je suis l'assistant FastPark.\n"
-                    f"En ce moment : **{ctx['free_spots']} places libres** sur {ctx['total_spots']}.\n\n"
-                    f"💡 Essayez :\n"
-                    f"• *Combien de places libres ?*\n"
-                    f"• *Taux d'occupation de l'EMSI*\n"
-                    f"• *État de toutes les universités*")
+            return (f"Bonjour ! Je suis l'assistant FastPark.\n"
+                    f"En ce moment : {ctx['free_spots']} places libres sur {ctx['total_spots']}.\n\n"
+                    f"Essayez : Combien de places libres ? / Taux EMSI / Etat toutes universites")
 
         if "merci" in q or "thank" in q:
-            return "🙏 Avec plaisir ! N'hésitez pas si vous avez d'autres questions."
+            return "Avec plaisir ! N'hesitez pas si vous avez d'autres questions."
 
-        if any(w in q for w in ["aide", "help", "?", "quoi", "comment", "que peux"]):
-            return ("❓ **Je peux vous aider avec :**\n"
-                    "• *Combien de places libres ?*\n"
-                    "• *Places libres par université*\n"
-                    "• *Taux d'occupation de l'EMSI*\n"
-                    "• *État des batteries*\n"
-                    "• *Prédiction dans 2h*")
+        if any(w in q for w in ["aide", "help", "quoi", "comment", "que peux"]):
+            return ("Je peux vous aider avec :\n"
+                    "- Combien de places libres ?\n"
+                    "- Taux d'occupation de l'EMSI\n"
+                    "- Etat des batteries\n"
+                    "- Prediction dans 2h")
 
-        # Réponse par défaut pour tout le reste (ex: "c", "ask", "test"...)
-        return (f"🤖 Je suis l'assistant **FastPark**, dédié aux parkings universitaires de Casablanca.\n\n"
-                f"En ce moment : ✅ **{ctx['free_spots']} places libres** disponibles.\n\n"
-                f"💡 Exemples de questions :\n"
-                f"• *Combien de places libres à Mundiapolis ?*\n"
-                f"• *Quelle université a le plus de places libres ?*\n"
-                f"• *Taux d'occupation global*")
+        return (f"Je suis l'assistant FastPark, dedie aux parkings universitaires de Casablanca.\n\n"
+                f"En ce moment : {ctx['free_spots']} places libres disponibles.\n\n"
+                f"Exemples : Combien de places a Mundiapolis ? / Taux global / Prediction dans 1h")
 
     # ─────────────────────────────────────────────────────────
-    # Méthode principale ask()
+    # Methode principale ask()
     # ─────────────────────────────────────────────────────────
     def ask(self, question: str, university=None) -> str:
-        """
-        1. Essaie Groq API (LLM gratuit, LLaMA 3.3 70B)
-        2. Si pas de clé ou erreur → fallback local intelligent
-        """
         try:
             result = self._call_llm(question, university)
             if result:
                 return result
         except Exception as e:
             logger.warning(f"Groq indisponible, fallback local : {e}")
-
         return self._ask_local(question, university)
 
     # ─────────────────────────────────────────────────────────
@@ -319,43 +305,139 @@ class FastParkMCP:
         now = datetime.now().strftime('%d/%m/%Y %H:%M')
 
         lines = [
-            "╔══════════════════════════════════════════════════════════════╗",
-            f"║              📊 RAPPORT FASTPARK — {now}         ║",
-            "╠══════════════════════════════════════════════════════════════╣",
-            f"║  ✅ Places libres     : {ctx['free_spots']:>3} / {ctx['total_spots']:<6}                      ║",
-            f"║  🔴 Places occupées   : {ctx['occupied_spots']:>3} / {ctx['total_spots']:<6}                      ║",
-            f"║  🟠 Places réservées  : {ctx['reserved_spots']:>3} / {ctx['total_spots']:<6}                      ║",
-            f"║  📈 Taux d'occupation : {ctx['occupancy_rate']:>5.1f}%                              ║",
-            f"║  🔋 Batterie moyenne  : {ctx['avg_battery']:>5.1f}%                              ║",
-            "╚══════════════════════════════════════════════════════════════╝",
+            "=" * 64,
+            f"  RAPPORT FASTPARK -- {now}",
+            "=" * 64,
+            f"  Places libres     : {ctx['free_spots']:>3} / {ctx['total_spots']}",
+            f"  Places occupees   : {ctx['occupied_spots']:>3} / {ctx['total_spots']}",
+            f"  Places reservees  : {ctx['reserved_spots']:>3} / {ctx['total_spots']}",
+            f"  Taux d'occupation : {ctx['occupancy_rate']:>5.1f}%",
+            f"  Batterie moyenne  : {ctx['avg_battery']:>5.1f}%",
+            "=" * 64,
         ]
 
         if not university or university == "all":
-            lines.append("\n📋 DÉTAIL PAR UNIVERSITÉ :")
+            lines.append("\nDETAIL PAR UNIVERSITE :")
             for u in self.get_university_summary():
-                bar   = "█" * int(u['occupancy_rate'] / 10) + "░" * (10 - int(u['occupancy_rate'] / 10))
+                bar   = "#" * int(u['occupancy_rate'] / 10) + "-" * (10 - int(u['occupancy_rate'] / 10))
                 lines.append(f"  {u['university'][:35]:<35} [{bar}] {u['occupancy_rate']:>5.1f}%")
 
         return "\n".join(lines)
 
     # ─────────────────────────────────────────────────────────
-    # Prédiction
+    # CORRECTIF : Prediction basee sur l'historique reel
     # ─────────────────────────────────────────────────────────
+    def get_hourly_occupancy_profile(self, university=None) -> dict:
+        """
+        Calcule le taux d'occupation moyen par heure (0-23)
+        a partir de parking_history (30 derniers jours).
+        Compatible SQLite et PostgreSQL.
+        """
+        from db import USE_POSTGRES
+
+        if USE_POSTGRES:
+            hour_expr = "EXTRACT(HOUR FROM changed_at::timestamp)::int"
+            date_filter = "changed_at >= NOW() - INTERVAL '30 days'"
+        else:
+            hour_expr = "CAST(strftime('%H', changed_at) AS INTEGER)"
+            date_filter = "changed_at >= datetime('now', '-30 days')"
+
+        if university and university != "all":
+            rows = self._query(f"""
+                SELECT {hour_expr} AS heure,
+                       SUM(CASE WHEN status='occupied' THEN 1 ELSE 0 END) AS occ,
+                       COUNT(*) AS total
+                FROM parking_history
+                WHERE university=?
+                  AND {date_filter}
+                GROUP BY heure
+                ORDER BY heure
+            """, (university,))
+        else:
+            rows = self._query(f"""
+                SELECT {hour_expr} AS heure,
+                       SUM(CASE WHEN status='occupied' THEN 1 ELSE 0 END) AS occ,
+                       COUNT(*) AS total
+                FROM parking_history
+                WHERE {date_filter}
+                GROUP BY heure
+                ORDER BY heure
+            """)
+
+        profile = {}
+        for row in rows:
+            heure = int(row[0])
+            occ   = row[1] or 0
+            total = row[2] or 1
+            profile[heure] = round((occ / total) * 100, 1)
+        return profile
+
     def predict_occupation(self, hours_ahead: int = 1, university=None) -> str:
-        ctx  = self.get_parking_context(university)
-        hour = datetime.now().hour
+        ctx          = self.get_parking_context(university)
+        current_rate = ctx['occupancy_rate']
+        now_hour     = datetime.now().hour
+        target_hour  = (now_hour + hours_ahead) % 24
+        scope        = f" pour {university}" if university and university != "all" else " global"
 
+        # --- Priorite 1 : historique reel (parking_history) ---
+        profile = self.get_hourly_occupancy_profile(university)
+
+        if len(profile) >= 6:
+            now_hist    = profile.get(now_hour)
+            target_hist = profile.get(target_hour)
+
+            if now_hist is not None and target_hist is not None and now_hist > 0:
+                # Ratio historique applique au taux actuel
+                predicted = round(min(98, max(2, current_rate * (target_hist / now_hist))), 1)
+                source    = "historique reel (30 derniers jours)"
+            elif target_hist is not None:
+                predicted = target_hist
+                source    = "historique reel (30 derniers jours)"
+            else:
+                # Interpolation lineaire entre les heures connues les plus proches
+                known  = sorted(profile.keys())
+                before = [h for h in known if h <= target_hour]
+                after  = [h for h in known if h > target_hour]
+                if before and after:
+                    h1, h2    = before[-1], after[0]
+                    t         = (target_hour - h1) / (h2 - h1)
+                    predicted = round(profile[h1] + t * (profile[h2] - profile[h1]), 1)
+                elif before:
+                    predicted = profile[before[-1]]
+                else:
+                    predicted = profile[after[0]]
+                source = "historique reel (interpolation)"
+
+            hist_now    = profile.get(now_hour, current_rate)
+            hist_target = profile.get(target_hour, predicted)
+            trend = ("en hausse" if hist_target > hist_now + 5
+                     else "en baisse" if hist_target < hist_now - 5
+                     else "stable")
+            peak_h    = max(profile, key=profile.get)
+            peak_rate = profile[peak_h]
+
+            return (
+                f"Prediction{scope} dans {hours_ahead}h :\n"
+                f"Taux estime : {predicted}% ({trend})\n"
+                f"Actuellement : {current_rate}% - {ctx['free_spots']} places libres\n"
+                f"Source : {source}\n"
+                f"Pic habituel : {peak_h}h ({peak_rate}%) - {len(profile)} heures analysees"
+            )
+
+        # --- Priorite 2 : coefficients statiques (si < 6 heures d'historique) ---
         PEAK_COEF   = {8: 12, 9: 10, 10: 6, 12: 8, 13: 7, 17: 9, 18: 6}
-        coef_now    = PEAK_COEF.get(hour, 2)
-        coef_future = PEAK_COEF.get((hour + hours_ahead) % 24, 2)
-        predicted   = min(98, max(5, ctx['occupancy_rate'] + ((coef_now + coef_future) / 2) * hours_ahead))
-        trend       = "📈 en hausse" if coef_future >= 6 else "📉 en baisse" if coef_future <= 2 else "➡️ stable"
-        target      = f" pour {university}" if university and university != "all" else " global"
+        coef_now    = PEAK_COEF.get(now_hour, 2)
+        coef_future = PEAK_COEF.get(target_hour, 2)
+        predicted   = round(min(98, max(5, current_rate + ((coef_now + coef_future) / 2) * hours_ahead)), 1)
+        trend       = "en hausse" if coef_future >= 6 else "en baisse" if coef_future <= 2 else "stable"
 
-        return (f"🔮 **Prédiction{target} dans {hours_ahead}h :**\n"
-                f"Taux estimé : **{predicted:.0f}%** ({trend})\n"
-                f"Actuellement : {ctx['occupancy_rate']}% · {ctx['free_spots']} places libres")
+        return (
+            f"Prediction{scope} dans {hours_ahead}h :\n"
+            f"Taux estime : {predicted}% ({trend})\n"
+            f"Actuellement : {current_rate}% - {ctx['free_spots']} places libres\n"
+            f"Source : coefficients statiques (historique insuffisant - {len(profile)} heures connues)"
+        )
 
 
-# Instance globale — db_path réassigné depuis app.py avec DB_PATH absolu
+# Instance globale — db_path reassigne depuis app.py
 mcp = FastParkMCP()

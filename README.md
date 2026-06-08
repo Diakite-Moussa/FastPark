@@ -183,7 +183,14 @@ gunicorn==21.2.0
 
 ---
 
-## 👨‍💻 Auteur
+## 👨‍💻 Équipe
 
-**Moussa Diakite** — Génie Informatique, Université Mundiapolis, Casablanca  
+| Rôle | Nom |
+|------|-----|
+| CEO + UX | **Eliman** |
+| CTO + Dev | **Moussa Diakite** |
+| Lead Dev + QA | **Abdoul Majid** |
+
+**Superviseur :** Prof. Marouane Slaitane  
+Génie Informatique, Université Mundiapolis, Casablanca  
 Projet FastPark — 2025/2026
